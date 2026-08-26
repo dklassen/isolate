@@ -1,0 +1,58 @@
+FROM node:lts-slim
+
+# Bootstrap Go toolchain. This is NOT the version used to build project code — it's only a
+# launcher. GOTOOLCHAIN=auto is Go's default (unset here, so it applies), so when entrypoint.sh
+# runs `go mod download` against a mounted project's go.mod, the go command transparently
+# downloads and switches to whatever toolchain version that project actually declares (via its
+# `go` or `toolchain` directive) before doing anything else. Bumping this ARG is never required to
+# support a newer project; any reasonably recent version works as the bootstrap.
+ARG GO_VERSION=1.26.1
+RUN set -eux; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends \
+  curl \
+  git \
+  jq \
+  ssh \
+  ca-certificates; \
+  rm -rf /var/lib/apt/lists/*; \
+  case "$(dpkg --print-architecture)" in \
+  amd64) goarch=amd64 ;; \
+  arm64) goarch=arm64 ;; \
+  *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" -o /tmp/go.tar.gz; \
+  tar -C /usr/local -xzf /tmp/go.tar.gz; \
+  rm /tmp/go.tar.gz
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+
+# GitHub CLI, so agents can use `gh` inside the container. Auth comes from a
+# GH_TOKEN env var at run time (see --secrets-file in run.go and
+# assets/env/secrets.env.example) -- nothing is baked in here.
+RUN set -eux; \
+  mkdir -p -m 755 /etc/apt/keyrings; \
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+  chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends gh; \
+  rm -rf /var/lib/apt/lists/*
+
+# Copied apart from start.sh so an agent is reinstalled only when its pins change.
+COPY agents/pi/package.json agents/pi/package-lock.json agents/pi/install.sh /opt/isolate/agents/pi/
+RUN /opt/isolate/agents/pi/install.sh
+COPY agents/claude/package.json agents/claude/package-lock.json agents/claude/install.sh /opt/isolate/agents/claude/
+RUN /opt/isolate/agents/claude/install.sh
+
+WORKDIR /workspace
+
+COPY entrypoint.sh /entrypoint.sh
+# Per-agent start scripts, copied by name rather than as agents/: each
+# agents/<agent>/config/ beside them is the host config directory mounted
+# at run time, holding credentials and session history that must never be
+# baked into the image (.dockerignore also keeps it out of the build).
+COPY agents/pi/start.sh /opt/isolate/agents/pi/
+COPY agents/claude/start.sh /opt/isolate/agents/claude/
+RUN chmod +x /entrypoint.sh /opt/isolate/agents/*/start.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

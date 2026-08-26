@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "isolate": {
+    "agent": "@anthropic-ai/claude-code"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.280"
+  }
+}

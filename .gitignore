@@ -1,0 +1,44 @@
+/bin/
+/isolate
+.task/
+
+# Runtime state written into assets/agents/pi/config by pi itself when --config is
+# live-mounted at /root/.pi (see run.go). agent/npm/ is deliberately absent:
+# extensions come from assets/agents/pi/package.json (see start.sh there), so
+# pi should never create it. If it appears, something declared "packages" in
+# settings.json and pi installed them outside the lockfile -- though pi writes
+# a nested `*` .gitignore into it, so check for the directory, not git status.
+/assets/agents/pi/config/agent/sessions/
+/assets/agents/pi/config/agent/models-store.json
+/assets/agents/pi/config/agent/trust.json
+/assets/agents/pi/config/agent/bin/*
+/assets/agents/pi/config/agent/missions/
+/assets/agents/pi/config/agent/pi-subagents/
+/assets/agents/pi/config/agent/mcp*
+# agent/auth.json is deliberately tracked, as an empty {}, and so can't be
+# ignored here. pi saves API keys and OAuth tokens from /login into it, so if
+# it ever shows as modified, don't commit it: pi's docs say "Keep it private
+# and do not commit it." (MCP server tokens go to mcp-auth.json, ignored above.)
+
+# Runtime state written into assets/agents/claude/config by claude itself when --config/
+# --config-file are live-mounted at /root/.claude and /root/.claude.json
+# (see run.go). Unlike pi's config, this is ignored wholesale rather than
+# per-file: claude writes account-identifying data (userID, machineID) into
+# both, so nothing it writes should ever be tracked. claude.json.example is
+# the checked-in placeholder; copy it to claude.json to bootstrap.
+/assets/agents/claude/config/home/*
+!/assets/agents/claude/config/home/.gitkeep
+# Skills are checked in; synced/ is claude.ai's per-account copy of its own skills.
+!/assets/agents/claude/config/home/skills/
+/assets/agents/claude/config/home/skills/synced/
+/assets/agents/claude/config/claude.json
+
+# Real secrets (GH_TOKEN, ...) passed into the container via --secrets-file
+# (see run.go). The canonical location is
+# assets/env/secrets.env, but this is deliberately matched by shape rather
+# than by exact path: earlier layouts kept it at assets/claude/.env, and a
+# path-specific rule silently stops protecting a real key the moment the
+# file moves. Anything *.env anywhere under assets/ is a secret; only the
+# checked-in *.env.example templates are tracked.
+/assets/**/*.env
+!/assets/**/*.env.example

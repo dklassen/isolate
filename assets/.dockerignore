@@ -1,0 +1,15 @@
+# The build context is assets/ (see images:build in Taskfile.yml), which also
+# holds the host config directories mounted at run time -- including
+# claude's OAuth session (agents/claude/config/home/.credentials.json) and
+# real secrets (env/secrets.env). The Containerfile never COPYs them, but
+# without this they'd still be sent to the builder with every build.
+#
+# Each agent's config/ is listed by name rather than as agents/*/config/:
+# a new agent's config directory must be added here.
+#
+# Named .dockerignore, not .containerignore: that's the file Apple's
+# `container build` reads. Deliberately a plain denylist with no `!`
+# re-includes, which it resolves differently from Docker (apple/container#1800).
+agents/claude/config/
+agents/pi/config/
+env/

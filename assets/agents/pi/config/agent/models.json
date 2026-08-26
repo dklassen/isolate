@@ -1,0 +1,15 @@
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://host.container.internal:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "blah",
+      "models": [
+        { "id": "llama3.1:8b" },
+        { "id": "qwen3-coder:30b" },
+        { "id": "qwen3.5:latest" },
+        { "id": "qwen3.8:latest" }
+      ]
+    }
+  }
+}

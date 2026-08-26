@@ -1,0 +1,212 @@
+version: "3"
+
+vars:
+  BIN: bin/isolate
+  # Keep IMAGE_REF in sync with version in main.go (imageRef derives it)
+  IMAGE_REF: isolate-agents:0.1.0
+  PI_CONFIG: assets/agents/pi/config
+  CLAUDE_CONFIG: assets/agents/claude/config/home
+  CLAUDE_CONFIG_FILE: assets/agents/claude/config/claude.json
+  SECRETS_FILE: assets/env/secrets.env
+  # Keep in sync with hostAlias and the hint in container.go
+  HOST_ALIAS: host.container.internal
+  HOST_ALIAS_IP: 203.0.113.113
+
+  # Extra args for isolate (e.g. the <folder>, --sessions). Pass as
+  # positional (task run <folder>) or via env: CLI_ARGS=. task run
+
+tasks:
+  build:
+    desc: Compile the isolate binary, then clean and rebuild the container image
+    silent: true
+    # compile has no dependency on the container system, so it runs
+    # concurrently with images:rebuild rather than blocking behind it.
+    deps: [compile, images:rebuild]
+
+  compile:
+    desc: Compile the isolate binary
+    silent: true
+    cmds:
+      - go build -o {{.BIN}} .
+
+  images:rebuild:
+    desc: Clean and rebuild the container image
+    silent: true
+    # system:check as a dep of this task (rather than of build) keeps
+    # images:clean ordered after it without also blocking compile on it:
+    # images:clean needs the container system already up.
+    deps: [system:check]
+    cmds:
+      - task: images:clean
+      - task: images:build
+
+  secrets:check:
+    desc: "Verify {{.SECRETS_FILE}} exists (GH_TOKEN, etc.)"
+    silent: true
+    preconditions:
+      - sh: test -f {{.SECRETS_FILE}}
+        msg: "{{.SECRETS_FILE}} is missing. Copy assets/env/secrets.env.example to {{.SECRETS_FILE}} and fill in real values (see README)."
+
+  run:
+    desc: "Run isolate with the pi agent (usage: task run <folder>)"
+    silent: true
+    # No secrets:check dep: nothing in {{.SECRETS_FILE}} is required for pi to
+    # run, so the file is passed only when it happens to exist.
+    deps: [system:check]
+    vars:
+      SECRETS_ARG:
+        sh: test -f {{.SECRETS_FILE}} && echo "--secrets-file {{.SECRETS_FILE}}" || true
+    preconditions:
+      - sh: test -f {{.BIN}}
+        msg: "{{.BIN}} is missing. Build it first with: go tool task build"
+    cmds:
+      - ./{{.BIN}} run --agent pi --config {{.PI_CONFIG}} {{.SECRETS_ARG}} {{.CLI_ARGS}}
+
+  run:claude:
+    desc: "Run isolate with the Claude Code agent, using assets/agents/claude/config for config (usage: task run:claude <folder>)"
+    silent: true
+    # No secrets:check dep: claude authenticates via an interactive /login at
+    # startup persisted into the mounted --config directory, not via this
+    # file -- {{.SECRETS_FILE}} is passed only when it happens to exist,
+    # e.g. for GH_TOKEN.
+    deps: [system:check]
+    vars:
+      SECRETS_ARG:
+        sh: test -f {{.SECRETS_FILE}} && echo "--secrets-file {{.SECRETS_FILE}}" || true
+    preconditions:
+      - sh: test -f {{.BIN}}
+        msg: "{{.BIN}} is missing. Build it first with: go tool task build"
+      - sh: test -f {{.CLAUDE_CONFIG_FILE}}
+        msg: "{{.CLAUDE_CONFIG_FILE}} is missing. Copy assets/agents/claude/config/claude.json.example to {{.CLAUDE_CONFIG_FILE}} to bootstrap it."
+    cmds:
+      - ./{{.BIN}} run --agent claude --config {{.CLAUDE_CONFIG}} --config-file {{.CLAUDE_CONFIG_FILE}} {{.SECRETS_ARG}} {{.CLI_ARGS}}
+
+  agents:bump:
+    desc: "Pin a package in an agent's package.json and re-resolve its lockfile; adds it if absent (usage: task agents:bump AGENT=pi [PKG=pi-subagents] [VERSION=1.2.3], PKG defaults to the agent itself, VERSION to latest)"
+    silent: true
+    deps: [images:check]
+    requires:
+      vars: [AGENT]
+    vars:
+      VERSION: '{{.VERSION | default "latest"}}'
+    preconditions:
+      - sh: test -f assets/agents/{{.AGENT}}/package.json
+        msg: "assets/agents/{{.AGENT}}/package.json is missing; AGENT must be one of the directories under assets/agents"
+    cmds:
+      # "isolate.agent" names the agent package itself; every other
+      # dependency is an add-on (pi extensions, loaded by start.sh).
+      - |
+        container run --rm -v "$PWD/assets/agents/{{.AGENT}}:/agent" -w /agent --entrypoint sh {{.IMAGE_REF}} -c '
+          set -e
+          pkg="{{.PKG}}"
+          [ -n "$pkg" ] || pkg=$(node -p "require(\"./package.json\").isolate.agent")
+          npm install --package-lock-only --save-exact --ignore-scripts --no-audit --no-fund "$pkg@{{.VERSION}}"
+          echo "{{.AGENT}}: $pkg pinned to $(npm pkg get "dependencies.$pkg" | tr -d \")"
+        '
+
+  agents:bump:all:
+    desc: "Pin every package in an agent's package.json to its latest release and re-resolve its lockfile (usage: task agents:bump:all AGENT=pi)"
+    silent: true
+    deps: [images:check]
+    requires:
+      vars: [AGENT]
+    preconditions:
+      - sh: test -f assets/agents/{{.AGENT}}/package.json
+        msg: "assets/agents/{{.AGENT}}/package.json is missing; AGENT must be one of the directories under assets/agents"
+    cmds:
+      # One npm install, so the agent and its add-ons resolve as a single
+      # tree: an add-on that needs the new agent version can't fail on
+      # install order. All-or-nothing -- if any package's peer ranges
+      # conflict, npm fails with ERESOLVE and nothing changes; hold that one
+      # back by bumping the rest individually with agents:bump.
+      - |
+        container run --rm -v "$PWD/assets/agents/{{.AGENT}}:/agent" -w /agent --entrypoint sh {{.IMAGE_REF}} -c '
+          set -e
+          specs=$(node -p "Object.keys(require(\"./package.json\").dependencies).map((name) => name + \"@latest\").join(\" \")")
+          npm install --package-lock-only --save-exact --ignore-scripts --no-audit --no-fund $specs
+          node -p "Object.entries(require(\"./package.json\").dependencies).map(([name, version]) => \"{{.AGENT}}: \" + name + \" pinned to \" + version).join(\"\\n\")"
+        '
+
+  agents:outdated:
+    desc: Compare every package pinned in each agent's package.json against its latest release
+    silent: true
+    deps: [images:check]
+    cmds:
+      - |
+        container run --rm -v "$PWD/assets/agents:/agents:ro" --entrypoint sh {{.IMAGE_REF}} -c '
+          set -e
+          for dir in /agents/*/; do
+            [ -f "$dir/package.json" ] || continue
+            cd "$dir"
+            for pkg in $(node -p "Object.keys(require(\"./package.json\").dependencies).join(\" \")"); do
+              pinned=$(node -p "require(\"./package.json\").dependencies[\"$pkg\"]")
+              latest=$(npm view "$pkg" version)
+              if [ "$pinned" = "$latest" ]; then
+                echo "$(basename "$dir"): $pkg $pinned (latest)"
+              else
+                published=$(npm view "$pkg@$latest" | grep -o "published .*" | sed "s/ by .*//")
+                echo "$(basename "$dir"): $pkg $pinned -> $latest ($published)"
+              fi
+            done
+          done
+        '
+
+  test:
+    desc: Run the test suite
+    silent: true
+    cmd: go test ./... -cover
+
+  fmt:
+    desc: Format the codebase
+    silent: true
+    cmd: gofmt -l -w .
+
+  lint:
+    desc: Run golangci-lint on the codebase
+    silent: true
+    cmd: go tool golangci-lint run ./...
+
+  system:check:
+    desc: Check apple container system status; start it if it's down
+    silent: true
+    cmds:
+      - |
+        if ! container system status; then
+          echo "container system is not running -- starting it..."
+          container system start
+          container system status
+        fi
+
+  system:dns:
+    desc: "Register {{.HOST_ALIAS}} so containers can reach the host (needs sudo; rerun after every reboot)"
+    silent: true
+    deps: [system:check]
+    cmds:
+      - |
+        if container system dns list | grep -qF {{.HOST_ALIAS}}; then
+          echo "{{.HOST_ALIAS}} already registered"
+        else
+          sudo container system dns create {{.HOST_ALIAS}} --localhost {{.HOST_ALIAS_IP}}
+        fi
+
+  images:check:
+    desc: Verify the isolate-agents image has been built
+    silent: true
+    # agents:* run npm inside the built image (rather than a separate Node
+    # image) so the host needs no Node and npm matches what the image ships.
+    deps: [system:check]
+    preconditions:
+      - sh: container image inspect {{.IMAGE_REF}} >/dev/null 2>&1
+        msg: "{{.IMAGE_REF}} is missing. Build it first with: go tool task images:build"
+
+  images:clean:
+    desc: Delete the built isolate-agents image, if present (forces a rebuild)
+    silent: true
+    # Non-fatal: `build` chains clean -> build, and a fresh clone has no image
+    # to delete, which would otherwise abort the build.
+    cmd: container image delete -f {{.IMAGE_REF}} || true
+
+  images:build:
+    desc: Build the isolate-agents image
+    silent: true
+    cmd: container build -f assets/Containerfile -t {{.IMAGE_REF}} assets
