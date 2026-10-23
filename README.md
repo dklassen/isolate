@@ -55,6 +55,23 @@ The folder is created if missing; if it contains a `go.mod`, dependencies are do
 For Claude Code, copy `assets/agents/claude/config/claude.json.example` to `claude.json` once, then
 run `/login` inside the first session; the login persists in the mounted config directory.
 
+## Local and ablated models
+
+The agent can use a model server on the host, such as Ollama at
+`http://host.container.internal:11434`. Hugging Face models that have been ablated
+("abliterated") or fine-tuned to remove refusals need extra care:
+
+- **No refusals:** the model will follow destructive or exfiltrating instructions, including ones
+  injected through files, web pages or tool output it reads. isolate is the only safeguard left.
+- **What the agent can still reach:** the mounted folder (read-write; commit or back it up first),
+  every value in `--secrets-file`, the `--config` directory, the network, and any host service
+  listening on `host.container.internal`. Leave out secrets and config the session doesn't need.
+- **Model files run on the host, outside isolate:** prefer GGUF or safetensors over pickle weights
+  (`.bin`, `.pt`, `.pth`), which can execute code when loaded, and never enable `trust_remote_code`
+  for a repo you haven't reviewed.
+- **Provenance:** check the uploader and base model; an ablated model can carry other undisclosed
+  changes.
+
 ## Versions
 
 - Agent packages are pinned in `assets/agents/<agent>/package.json` and its lockfile; in-container
