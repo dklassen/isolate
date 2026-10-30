@@ -12,10 +12,12 @@ RUN set -eux; \
   apt-get install -y --no-install-recommends \
   curl \
   git \
+  iptables \
   jq \
   ssh \
   ca-certificates; \
   rm -rf /var/lib/apt/lists/*; \
+  command -v iptables && command -v setpriv; \
   case "$(dpkg --print-architecture)" in \
   amd64) goarch=amd64 ;; \
   arm64) goarch=arm64 ;; \
@@ -24,7 +26,14 @@ RUN set -eux; \
   curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" -o /tmp/go.tar.gz; \
   tar -C /usr/local -xzf /tmp/go.tar.gz; \
   rm /tmp/go.tar.gz
-ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+# Agents run as this unprivileged user (see entrypoint.sh); keep its home in
+# sync with agentHome in agent.go. uid 1000 is the base image's node user.
+# safe.directory: virtiofs mounts show every file as root-owned, which git
+# otherwise refuses as "dubious ownership" for any other user.
+RUN useradd --create-home --home-dir /home/agent --uid 1001 --user-group --shell /bin/sh agent && \
+  git config --system --add safe.directory '*'
+ENV GOPATH=/home/agent/go
+ENV PATH="/usr/local/go/bin:${GOPATH}/bin:${PATH}"
 
 # GitHub CLI, so agents can use `gh` inside the container. Auth comes from a
 # GH_TOKEN env var at run time (see --secrets-file in run.go and

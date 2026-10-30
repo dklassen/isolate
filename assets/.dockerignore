@@ -12,4 +12,6 @@
 # re-includes, which it resolves differently from Docker (apple/container#1800).
 agents/claude/config/
 agents/pi/config/
+agents/pi/config-ablated/
+profiles/
 env/

@@ -29,5 +29,5 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: isolate run <folder> [--agent pi|claude] [--config <path>] [--config-file <path>] [--sessions <path>] [--memory <size>] [--secrets-file <path>] [-- <agent args>...]")
+	fmt.Fprintln(os.Stderr, "usage: isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>] [--network ollama|host|open] [--config <path>] [--config-file <path>] [--sessions <path>] [--memory <size>] [--secrets-file <path>] [-- <agent args>...]")
 }

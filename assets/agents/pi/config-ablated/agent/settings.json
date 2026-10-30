@@ -1,0 +1,7 @@
+{
+  "defaultProvider": "ollama",
+  "defaultModel": "qwen3-coder:30b",
+  "theme": "dark",
+  "extensions": ["-builtin:mcp"],
+  "enableInstallTelemetry": false
+}

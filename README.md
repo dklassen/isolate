@@ -19,41 +19,91 @@ Linux VM that can see exactly one host folder.
 - Go (version per [go.mod](go.mod)); [Task](https://taskfile.dev) and golangci-lint come in as `go tool`s
 - Network access at image build time
 
-One-time setup, repeated after each reboot: start `container` and register
-`host.container.internal` so containers can reach the host (prompts for sudo).
+One-time setup: create the host-only network that runs use by default, then, again after each
+reboot, start `container` and register `host.container.internal` so containers can reach the
+host (prompts for sudo).
 
 ```bash
-go tool task system:dns
+go tool task system:network   # once
+go tool task system:dns       # after each reboot
 ```
 
 ## Usage
 
 ```bash
 go tool task build                    # build bin/isolate and the isolate-agents image
-go tool task run -- <folder>          # run pi
-go tool task run:claude -- <folder>   # run Claude Code
+go tool task run -- <folder>          # run pi, network locked to Ollama
+go tool task run:claude -- <folder>   # run Claude Code, with internet
 ```
 
 ```bash
-isolate run <folder> [--agent pi|claude] [--config <dir>] [--config-file <file>]
+isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>]
+                     [--network ollama|host|open] [--config <dir>] [--config-file <file>]
                      [--sessions <dir>] [--secrets-file <file>]... [--memory <size>] [-- <agent args>...]
 ```
 
 | Flag             | Effect                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------ |
+| `--profile`      | JSON file that sets any of the flags below; flags on the command line override it    |
 | `--agent`        | `pi` (default) or `claude`                                                           |
-| `--config`       | Host dir mounted read-write as the agent's config dir (`/root/.pi`, `/root/.claude`) |
+| `--model`        | Passed to the agent as `--model`, e.g. `ollama/qwen3-coder:30b` for pi               |
+| `--network`      | `ollama` (default), `host` or `open`; see [Network modes](#network-modes)            |
+| `--config`       | Host dir mounted read-write as the agent's config dir (`~/.pi`, `~/.claude`)         |
 | `--config-file`  | Host file mounted as `~/.claude.json` (claude only; must exist)                      |
 | `--sessions`     | Host dir mounted as pi's session history (pi only)                                   |
 | `--secrets-file` | `key=value` file passed via `container run --env-file`; repeatable                   |
 | `--memory`       | VM memory limit, default `4g`; `--memory=` for none                                  |
 
 The folder is created if missing; if it contains a `go.mod`, dependencies are downloaded first.
-`go tool task run` fills in the checked-in config paths and uses `assets/env/secrets.env` if present
-(template: [secrets.env.example](assets/env/secrets.env.example)).
+`go tool task run` fills in the checked-in config paths and passes no secrets. `run:claude` also
+passes `assets/env/secrets.env` if present (template:
+[secrets.env.example](assets/env/secrets.env.example)).
 
 For Claude Code, copy `assets/agents/claude/config/claude.json.example` to `claude.json` once, then
 run `/login` inside the first session; the login persists in the mounted config directory.
+
+## Profiles
+
+A profile saves one setup of agent, model, network and config, so each one can run against its
+own config directory without sharing logins, sessions or extensions with the others. Keys are the
+flag names, and relative paths are relative to the profile file:
+
+```json
+{
+  "agent": "pi",
+  "model": "ollama/qwen3-coder:30b",
+  "network": "ollama",
+  "config": "../agents/pi/config-ablated"
+}
+```
+
+```bash
+go tool task run:profile PROFILE=ablated -- <folder>   # assets/profiles/ablated.json
+```
+
+A model named in `model` must also be listed in that config's `agent/models.json` (pi).
+
+## Network modes
+
+| Mode     | Reaches                                                                          |
+| -------- | -------------------------------------------------------------------------------- |
+| `ollama` | Default. Only `host.container.internal:11434`; no internet, no other host ports  |
+| `host`   | Any port on the host; no internet (`--internal` host-only network)               |
+| `open`   | Internet and host (container's default network)                                  |
+
+`ollama` and `host` use the host-only network from `go tool task system:network`. In `ollama`
+mode, the entrypoint installs an iptables egress allowlist as root, then starts the agent as the
+unprivileged `agent` user (see [Agent user](#agent-user)), so it can't lift it. If the firewall
+can't be installed, the run stops. Nothing that needs the internet works in this mode: `go mod
+download`, `gh`, web-search extensions. Pass `--network open` to allow it; `go tool task
+run:claude` does, since Claude Code needs Anthropic's API.
+
+## Agent user
+
+Agents run as `agent` (uid 1001, home `/home/agent`), not root: the entrypoint does its root-only
+setup, then drops to that user with no capabilities and `no_new_privs`. The agent can still write
+everything mounted into the container, but not `/etc` or the firewall, and it can't `apt-get
+install`; add any tool it needs to [assets/Containerfile](assets/Containerfile).
 
 ## Local and ablated models
 
@@ -65,7 +115,10 @@ The agent can use a model server on the host, such as Ollama at
   injected through files, web pages or tool output it reads. isolate is the only safeguard left.
 - **What the agent can still reach:** the mounted folder (read-write; commit or back it up first),
   every value in `--secrets-file`, the `--config` directory, the network, and any host service
-  listening on `host.container.internal`. Leave out secrets and config the session doesn't need.
+  listening on `host.container.internal`. Leave out secrets and config the session doesn't need;
+  the `ablated` profile does this, with its own config and `--network ollama`. Ollama's own API
+  is still reachable, so the model can delete or create models there, and `/api/pull` makes the
+  host fetch from any registry URL the model names, which can leak data through that URL.
 - **Model files run on the host, outside isolate:** prefer GGUF or safetensors over pickle weights
   (`.bin`, `.pt`, `.pth`), which can execute code when loaded, and never enable `trust_remote_code`
   for a repo you haven't reviewed.

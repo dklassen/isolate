@@ -11,6 +11,8 @@ vars:
   # Keep in sync with hostAlias and the hint in container.go
   HOST_ALIAS: host.container.internal
   HOST_ALIAS_IP: 203.0.113.113
+  # Keep in sync with hostOnlyNetwork in network.go
+  HOST_ONLY_NETWORK: isolate-host-only
 
   # Extra args for isolate (e.g. the <folder>, --sessions). Pass as
   # positional (task run <folder>) or via env: CLI_ARGS=. task run
@@ -50,17 +52,14 @@ tasks:
   run:
     desc: "Run isolate with the pi agent (usage: task run <folder>)"
     silent: true
-    # No secrets:check dep: nothing in {{.SECRETS_FILE}} is required for pi to
-    # run, so the file is passed only when it happens to exist.
+    # No {{.SECRETS_FILE}}: offline, the agent can't use its tokens, only leak
+    # them to the host services it can still reach.
     deps: [system:check]
-    vars:
-      SECRETS_ARG:
-        sh: test -f {{.SECRETS_FILE}} && echo "--secrets-file {{.SECRETS_FILE}}" || true
     preconditions:
       - sh: test -f {{.BIN}}
         msg: "{{.BIN}} is missing. Build it first with: go tool task build"
     cmds:
-      - ./{{.BIN}} run --agent pi --config {{.PI_CONFIG}} {{.SECRETS_ARG}} {{.CLI_ARGS}}
+      - ./{{.BIN}} run --agent pi --config {{.PI_CONFIG}} {{.CLI_ARGS}}
 
   run:claude:
     desc: "Run isolate with the Claude Code agent, using assets/agents/claude/config for config (usage: task run:claude <folder>)"
@@ -68,7 +67,7 @@ tasks:
     # No secrets:check dep: claude authenticates via an interactive /login at
     # startup persisted into the mounted --config directory, not via this
     # file -- {{.SECRETS_FILE}} is passed only when it happens to exist,
-    # e.g. for GH_TOKEN.
+    # e.g. for GH_TOKEN. --network open: Claude Code needs Anthropic's API.
     deps: [system:check]
     vars:
       SECRETS_ARG:
@@ -79,7 +78,23 @@ tasks:
       - sh: test -f {{.CLAUDE_CONFIG_FILE}}
         msg: "{{.CLAUDE_CONFIG_FILE}} is missing. Copy assets/agents/claude/config/claude.json.example to {{.CLAUDE_CONFIG_FILE}} to bootstrap it."
     cmds:
-      - ./{{.BIN}} run --agent claude --config {{.CLAUDE_CONFIG}} --config-file {{.CLAUDE_CONFIG_FILE}} {{.SECRETS_ARG}} {{.CLI_ARGS}}
+      - ./{{.BIN}} run --agent claude --network open --config {{.CLAUDE_CONFIG}} --config-file {{.CLAUDE_CONFIG_FILE}} {{.SECRETS_ARG}} {{.CLI_ARGS}}
+
+  run:profile:
+    desc: "Run isolate with a profile from assets/profiles (usage: task run:profile PROFILE=ablated -- <folder>)"
+    silent: true
+    # No secrets file unless the profile lists one: profiles are for runs
+    # that should see less, not more.
+    deps: [system:check]
+    requires:
+      vars: [PROFILE]
+    preconditions:
+      - sh: test -f {{.BIN}}
+        msg: "{{.BIN}} is missing. Build it first with: go tool task build"
+      - sh: test -f assets/profiles/{{.PROFILE}}.json
+        msg: "assets/profiles/{{.PROFILE}}.json is missing; PROFILE must name a file there, without .json"
+    cmds:
+      - ./{{.BIN}} run --profile assets/profiles/{{.PROFILE}}.json {{.CLI_ARGS}}
 
   agents:bump:
     desc: "Pin a package in an agent's package.json and re-resolve its lockfile; adds it if absent (usage: task agents:bump AGENT=pi [PKG=pi-subagents] [VERSION=1.2.3], PKG defaults to the agent itself, VERSION to latest)"
@@ -187,6 +202,18 @@ tasks:
           echo "{{.HOST_ALIAS}} already registered"
         else
           sudo container system dns create {{.HOST_ALIAS}} --localhost {{.HOST_ALIAS_IP}}
+        fi
+
+  system:network:
+    desc: "Create the host-only {{.HOST_ONLY_NETWORK}} network used by --network host and ollama (once)"
+    silent: true
+    deps: [system:check]
+    cmds:
+      - |
+        if container network list -q | grep -qx {{.HOST_ONLY_NETWORK}}; then
+          echo "{{.HOST_ONLY_NETWORK}} already exists"
+        else
+          container network create --internal {{.HOST_ONLY_NETWORK}}
         fi
 
   images:check:

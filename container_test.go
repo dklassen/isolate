@@ -12,15 +12,18 @@ import (
 // semantics, no exit codes. The only thing in play is containerManager and
 // the policy functions it calls.
 type fakeProbe struct {
-	images string
-	dns    string
+	images   string
+	dns      string
+	networks string
 
-	imagesErr error
-	dnsErr    error
+	imagesErr   error
+	dnsErr      error
+	networksErr error
 }
 
-func (f *fakeProbe) imageRefs() (string, error)  { return f.images, f.imagesErr }
-func (f *fakeProbe) dnsEntries() (string, error) { return f.dns, f.dnsErr }
+func (f *fakeProbe) imageRefs() (string, error)    { return f.images, f.imagesErr }
+func (f *fakeProbe) dnsEntries() (string, error)   { return f.dns, f.dnsErr }
+func (f *fakeProbe) networkNames() (string, error) { return f.networks, f.networksErr }
 
 func TestImageListContains(t *testing.T) {
 	// ImageRef's name without the tag; the manager and this test both
@@ -117,6 +120,34 @@ func TestValidateDNSWithProbe(t *testing.T) {
 	})
 }
 
+func TestValidateNetwork(t *testing.T) {
+	ready := fakeProbe{images: imageRef + "\n", dns: hostAlias + "\n"}
+
+	t.Run("default network needs no lookup", func(t *testing.T) {
+		p := ready
+		p.networksErr = errors.New("must not be called")
+		if err := NewContainerManager(&p).Validate(""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("network present passes", func(t *testing.T) {
+		p := ready
+		p.networks = "default\n" + hostOnlyNetwork + "\n"
+		if err := NewContainerManager(&p).Validate(hostOnlyNetwork); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("network absent fails", func(t *testing.T) {
+		p := ready
+		p.networks = "default\n" + hostOnlyNetwork + "-old\n"
+		if err := NewContainerManager(&p).Validate(hostOnlyNetwork); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}
+
 func TestValidateShortCircuitsOnImageFailure(t *testing.T) {
 	// A probe whose DNS call would fail must not even be consulted when the
 	// image check fails first: validates Validate's ordering.
@@ -126,7 +157,7 @@ func TestValidateShortCircuitsOnImageFailure(t *testing.T) {
 		imagesErr: nil,
 		dnsErr:    dnsBoom,
 	})
-	err := m.Validate()
+	err := m.Validate("")
 	if errors.Is(err, dnsBoom) {
 		t.Fatalf("err = %v, validateImage's failure should short-circuit before validateDNS runs", err)
 	}

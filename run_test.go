@@ -41,8 +41,8 @@ func TestBuildMounts(t *testing.T) {
 			config:   dir,
 			sessions: filepath.Join(dir, "sessions"),
 			want: []string{
-				"-v", dir + ":/root/.pi",
-				"-v", filepath.Join(dir, "sessions") + ":/root/.pi/agent/sessions",
+				"-v", dir + ":" + pi.ConfigDir,
+				"-v", filepath.Join(dir, "sessions") + ":" + pi.SessionsDir,
 			},
 		},
 	}, {
@@ -66,8 +66,8 @@ func TestBuildMounts(t *testing.T) {
 			config:     dir,
 			configFile: existingFile,
 			want: []string{
-				"-v", dir + ":/root/.claude",
-				"-v", existingFile + ":/root/.claude.json",
+				"-v", dir + ":" + claude.ConfigDir,
+				"-v", existingFile + ":" + claude.ConfigFile,
 			},
 		},
 	}, {

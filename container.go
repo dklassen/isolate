@@ -27,6 +27,8 @@ type containerProbe interface {
 	imageRefs() (string, error)
 	// dnsEntries returns the verbatim output of `container system dns list`.
 	dnsEntries() (string, error)
+	// networkNames returns the verbatim output of `container network list -q`.
+	networkNames() (string, error)
 }
 
 // appleContainer is the production containerProbe: named for what it
@@ -47,6 +49,11 @@ func (a appleContainer) imageRefs() (string, error) {
 
 func (a appleContainer) dnsEntries() (string, error) {
 	out, err := exec.Command(a.bin, "system", "dns", "list").Output()
+	return string(out), err
+}
+
+func (a appleContainer) networkNames() (string, error) {
+	out, err := exec.Command(a.bin, "network", "list", "-q").Output()
 	return string(out), err
 }
 
@@ -73,12 +80,32 @@ func NewContainerManager(probe containerProbe) *containerManager {
 	}
 }
 
-// Validate executes the full readiness check against m.probe.
-func (m *containerManager) Validate() error {
+// Validate executes the full readiness check against m.probe. network is the
+// container network the run attaches to, or "" for the default one.
+func (m *containerManager) Validate(network string) error {
 	if err := m.validateImage(); err != nil {
 		return err
 	}
-	return m.validateDNS()
+	if err := m.validateDNS(); err != nil {
+		return err
+	}
+	if network == "" {
+		return nil
+	}
+	return m.validateNetwork(network)
+}
+
+func (m *containerManager) validateNetwork(network string) error {
+	list, err := m.probe.networkNames()
+	if err != nil {
+		return fmt.Errorf("container network list: %w", err)
+	}
+	for line := range strings.SplitSeq(list, "\n") {
+		if strings.TrimSpace(line) == network {
+			return nil
+		}
+	}
+	return fmt.Errorf("container network %q not found; create it once with: go tool task system:network", network)
 }
 
 func (m *containerManager) validateImage() error {

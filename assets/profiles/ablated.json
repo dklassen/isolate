@@ -1,0 +1,6 @@
+{
+  "agent": "pi",
+  "model": "ollama/qwen3-coder:30b",
+  "network": "ollama",
+  "config": "../agents/pi/config-ablated"
+}

@@ -17,7 +17,10 @@ import (
 // anywhere in argv, and there is no parallel list to keep in sync.
 type runFlags struct {
 	fs           *flag.FlagSet
+	profile      *string
 	agent        *string
+	model        *string
+	network      *string
 	config       *string
 	configFile   *string
 	sessions     *string
@@ -27,22 +30,37 @@ type runFlags struct {
 	h            *bool
 }
 
+// Flag names shared by newRunFlags and profile.apply.
+const (
+	flagAgent       = "agent"
+	flagModel       = "model"
+	flagNetwork     = "network"
+	flagConfig      = "config"
+	flagConfigFile  = "config-file"
+	flagSessions    = "sessions"
+	flagSecretsFile = "secrets-file"
+	flagMemory      = "memory"
+)
+
 func newRunFlags() *runFlags {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 
 	var secretsFiles stringSlice
 	rf := &runFlags{
 		fs:           fs,
-		agent:        fs.String("agent", "pi", "Which agent to run inside the container (pi, claude)"),
-		config:       fs.String("config", "", "Path to an existing host config directory, live-mounted read-write as the agent's config directory (session history, installed extensions, and other runtime writes persist back to this directory)"),
-		configFile:   fs.String("config-file", "", "Path to a single host config file, live-mounted read-write as the agent's top-level config file (only supported by agents that have one, e.g. claude's ~/.claude.json)"),
-		sessions:     fs.String("sessions", "", "Path to a host directory to live-mount as the agent's session history directory, persisting sessions across runs (only supported by agents with a separate sessions directory, e.g. pi)"),
-		memory:       fs.String("memory", "4g", "Memory limit passed to 'container run --memory' (e.g. 4g); set empty to run without a limit"),
+		profile:      fs.String("profile", "", "Path to a JSON profile that fills in the other flags (agent, model, network, config, ...); flags given on the command line override it"),
+		agent:        fs.String(flagAgent, "pi", "Which agent to run inside the container (pi, claude)"),
+		model:        fs.String(flagModel, "", "Model passed to the agent as --model (e.g. ollama/qwen3-coder:30b for pi); empty uses the agent's configured default"),
+		network:      fs.String(flagNetwork, networkOllama.String(), "Network access: ollama (only the host's Ollama port), host (host only, no internet), or open (internet and host)"),
+		config:       fs.String(flagConfig, "", "Path to an existing host config directory, live-mounted read-write as the agent's config directory (session history, installed extensions, and other runtime writes persist back to this directory)"),
+		configFile:   fs.String(flagConfigFile, "", "Path to a single host config file, live-mounted read-write as the agent's top-level config file (only supported by agents that have one, e.g. claude's ~/.claude.json)"),
+		sessions:     fs.String(flagSessions, "", "Path to a host directory to live-mount as the agent's session history directory, persisting sessions across runs (only supported by agents with a separate sessions directory, e.g. pi)"),
+		memory:       fs.String(flagMemory, "4g", "Memory limit passed to 'container run --memory' (e.g. 4g); set empty to run without a limit"),
 		secretsFiles: &secretsFiles,
 		help:         fs.Bool("help", false, "Show help for 'isolate run'"),
 		h:            fs.Bool("h", false, "Alias of --help"),
 	}
-	fs.Var(&secretsFiles, "secrets-file", "Path to a host file of key=value secrets (e.g. GH_TOKEN) passed through to the container via 'container run --env-file'. Deliberately not called --env-file: this is for gitignored credential files like assets/env/secrets.env, not a project's ordinary .env. Repeatable. Never baked into the image or written anywhere by isolate itself.")
+	fs.Var(&secretsFiles, flagSecretsFile, "Path to a host file of key=value secrets (e.g. GH_TOKEN) passed through to the container via 'container run --env-file'. Deliberately not called --env-file: this is for gitignored credential files like assets/env/secrets.env, not a project's ordinary .env. Repeatable. Never baked into the image or written anywhere by isolate itself.")
 	return rf
 }
 
@@ -159,6 +177,13 @@ func runCmd(args []string) {
 		rf.fs.Usage()
 		return
 	}
+	if *rf.profile != "" {
+		p, err := loadProfile(*rf.profile)
+		must(err)
+		must(p.apply(rf.fs))
+	}
+	netMode, err := parseNetworkMode(*rf.network)
+	must(err)
 
 	if len(positional) < 1 {
 		fatalf("run: missing <folder>")
@@ -185,10 +210,11 @@ func runCmd(args []string) {
 	}
 
 	manager := NewContainerManager(appleContainer{bin: containerBin})
-	must(manager.Validate())
+	must(manager.Validate(netMode.network()))
 
 	fmt.Println("--- Container Sandbox Active ---")
 	fmt.Printf("Isolating to: %s\n", absTarget)
+	fmt.Printf("Network: %s\n", netMode)
 
 	// -t demands a terminal attached to stdin; scripts and CI don't have one,
 	// so drop the TTY in that case rather than failing the run (issue: -it was
@@ -200,6 +226,7 @@ func runCmd(args []string) {
 		runArgs = append(runArgs, "-i")
 	}
 	runArgs = append(runArgs, "-v", absTarget+":/workspace")
+	runArgs = append(runArgs, netMode.runArgs()...)
 	if *rf.memory != "" {
 		runArgs = append(runArgs, "--memory", *rf.memory)
 	}
@@ -212,6 +239,9 @@ func runCmd(args []string) {
 		runArgs = append(runArgs, "--env-file", abs)
 	}
 	runArgs = append(runArgs, imageRef, agent.Name)
+	if *rf.model != "" {
+		runArgs = append(runArgs, "--model", *rf.model)
+	}
 	runArgs = append(runArgs, agentArgs...)
 
 	//nolint:gosec // containerBin is resolved via exec.LookPath; running it is this tool's entire purpose

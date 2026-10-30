@@ -18,16 +18,20 @@ type Agent struct {
 	SessionsDir string
 }
 
+// agentHome is the home of the unprivileged user entrypoint.sh runs agents as;
+// keep in sync with assets/Containerfile.
+const agentHome = "/home/agent"
+
 var agents = map[string]*Agent{
 	"pi": {
 		Name:        "pi",
-		ConfigDir:   "/root/.pi",
-		SessionsDir: "/root/.pi/agent/sessions",
+		ConfigDir:   agentHome + "/.pi",
+		SessionsDir: agentHome + "/.pi/agent/sessions",
 	},
 	"claude": {
 		Name:       "claude",
-		ConfigDir:  "/root/.claude",
-		ConfigFile: "/root/.claude.json",
+		ConfigDir:  agentHome + "/.claude",
+		ConfigFile: agentHome + "/.claude.json",
 	},
 }
 
