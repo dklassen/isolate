@@ -39,7 +39,8 @@ go tool task run:claude -- <folder>   # run Claude Code, with internet
 ```bash
 isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>]
                      [--network ollama|host|open] [--config <dir>] [--config-file <file>]
-                     [--sessions <dir>] [--secrets-file <file>]... [--memory <size>] [-- <agent args>...]
+                     [--sessions <dir>] [--firewall-log <dir>] [--secrets-file <file>]...
+                     [--memory <size>] [-- <agent args>...]
 ```
 
 | Flag             | Effect                                                                               |
@@ -51,6 +52,7 @@ isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>]
 | `--config`       | Host dir mounted read-write as the agent's config dir (`~/.pi`, `~/.claude`)         |
 | `--config-file`  | Host file mounted as `~/.claude.json` (claude only; must exist)                      |
 | `--sessions`     | Host dir mounted as pi's session history (pi only)                                   |
+| `--firewall-log` | Existing host dir that receives `firewall.json`, the `ollama` firewall's drops       |
 | `--secrets-file` | `key=value` file passed via `container run --env-file`; repeatable                   |
 | `--memory`       | VM memory limit, default `4g`; `--memory=` for none                                  |
 
@@ -97,6 +99,11 @@ unprivileged `agent` user (see [Agent user](#agent-user)), so it can't lift it. 
 can't be installed, the run stops. Nothing that needs the internet works in this mode: `go mod
 download`, `gh`, web-search extensions. Pass `--network open` to allow it; `go tool task
 run:claude` does, since Claude Code needs Anthropic's API.
+
+The firewall sends dropped packets (rate-limited to 10/s) through NFLOG to `ulogd`, not the kernel
+log, which writes them one JSON object per line to `/var/log/isolate/firewall.json`. Pass
+`--firewall-log <dir>` to mount a host directory there and keep the log after the run; ulogd's
+own errors go to `ulogd.log` beside it. If logging can't start, the run continues with a warning.
 
 ## Agent user
 

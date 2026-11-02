@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+const (
+	// hostOnlyNetwork is created once by `go tool task system:network`.
+	hostOnlyNetwork = "isolate-host-only"
+	ollamaPort      = 11434
+	// firewallLogDir is where entrypoint.sh's ulogd writes the packets the
+	// networkOllama firewall drops; rendered into assets/ulogd.conf by
+	// `isolate generate`.
+	firewallLogDir = "/var/log/isolate"
+)
+
 // networkMode is what the container may reach over the network.
 type networkMode int
 
@@ -36,12 +46,6 @@ func parseNetworkMode(s string) (networkMode, error) {
 	return 0, fmt.Errorf("unknown network mode %q (known: %s)", s, strings.Join(networkModeNames[:], ", "))
 }
 
-const (
-	// hostOnlyNetwork is created once by `go tool task system:network`.
-	hostOnlyNetwork = "isolate-host-only"
-	ollamaPort      = 11434
-)
-
 // network is the container network m attaches to, or "" for the default.
 func (m networkMode) network() string {
 	if m == networkOpen {
@@ -62,7 +66,7 @@ func (m networkMode) runArgs() []string {
 		// it before starting the agent so the agent can't remove the rules.
 		args = append(args,
 			"--cap-add", "NET_ADMIN",
-			"--env", "ISOLATE_EGRESS="+hostAlias+":"+strconv.Itoa(ollamaPort),
+			"--env", "ISOLATE_EGRESS="+hostAlias+"="+hostAliasIP+":"+strconv.Itoa(ollamaPort),
 		)
 	}
 	return args

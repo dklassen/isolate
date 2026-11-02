@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 )
@@ -12,17 +13,28 @@ import (
 // semantics, no exit codes. The only thing in play is containerManager and
 // the policy functions it calls.
 type fakeProbe struct {
-	images   string
-	dns      string
-	networks string
+	images    string
+	resolvers map[string]string // registered domain -> resolver file
+	networks  string
 
 	imagesErr   error
 	dnsErr      error
 	networksErr error
 }
 
-func (f *fakeProbe) imageRefs() (string, error)    { return f.images, f.imagesErr }
-func (f *fakeProbe) dnsEntries() (string, error)   { return f.dns, f.dnsErr }
+func (f *fakeProbe) imageRefs() (string, error) { return f.images, f.imagesErr }
+
+func (f *fakeProbe) dnsResolver(domain string) (string, error) {
+	if f.dnsErr != nil {
+		return "", f.dnsErr
+	}
+	r, ok := f.resolvers[domain]
+	if !ok {
+		return "", fs.ErrNotExist
+	}
+	return r, nil
+}
+
 func (f *fakeProbe) networkNames() (string, error) { return f.networks, f.networksErr }
 
 func TestImageListContains(t *testing.T) {
@@ -98,15 +110,41 @@ func TestValidateImageWithProbe(t *testing.T) {
 	})
 }
 
+// resolverFile is what `container system dns create domain --localhost ip`
+// writes, with ip "" for a domain created without --localhost.
+func resolverFile(domain, ip string) string {
+	options := ""
+	if ip != "" {
+		options = "options localhost:" + ip
+	}
+	return "domain " + domain + "\nsearch " + domain + "\nnameserver 127.0.0.1\nport 1053\n" + options
+}
+
 func TestValidateDNSWithProbe(t *testing.T) {
-	t.Run("alias present passes", func(t *testing.T) {
-		if err := NewContainerManager(&fakeProbe{dns: "host.container.internal localhost\n"}).validateDNS(); err != nil {
+	t.Run("alias registered with hostAliasIP passes", func(t *testing.T) {
+		p := &fakeProbe{resolvers: map[string]string{hostAlias: resolverFile(hostAlias, hostAliasIP)}}
+		if err := NewContainerManager(p).validateDNS(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("alias absent fails", func(t *testing.T) {
-		if err := NewContainerManager(&fakeProbe{dns: "no domains configured\n"}).validateDNS(); err == nil {
+		p := &fakeProbe{resolvers: map[string]string{"test": resolverFile("test", "")}}
+		if err := NewContainerManager(p).validateDNS(); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("alias registered with another address fails", func(t *testing.T) {
+		p := &fakeProbe{resolvers: map[string]string{hostAlias: resolverFile(hostAlias, "198.51.100.1")}}
+		if err := NewContainerManager(p).validateDNS(); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("alias registered without --localhost fails", func(t *testing.T) {
+		p := &fakeProbe{resolvers: map[string]string{hostAlias: resolverFile(hostAlias, "")}}
+		if err := NewContainerManager(p).validateDNS(); err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})
@@ -121,7 +159,10 @@ func TestValidateDNSWithProbe(t *testing.T) {
 }
 
 func TestValidateNetwork(t *testing.T) {
-	ready := fakeProbe{images: imageRef + "\n", dns: hostAlias + "\n"}
+	ready := fakeProbe{
+		images:    imageRef + "\n",
+		resolvers: map[string]string{hostAlias: resolverFile(hostAlias, hostAliasIP)},
+	}
 
 	t.Run("default network needs no lookup", func(t *testing.T) {
 		p := ready

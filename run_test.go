@@ -255,6 +255,53 @@ func TestResolveSecretsFile(t *testing.T) {
 	}
 }
 
+func TestResolveFirewallLog(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "firewall.json")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{{
+		name:  "existing directory resolves to itself",
+		input: dir,
+	}, {
+		name:    "missing directory errors",
+		input:   filepath.Join(dir, "missing"),
+		wantErr: true,
+	}, {
+		name:    "file errors",
+		input:   file,
+		wantErr: true,
+	}, {
+		name:    "path with ':' errors",
+		input:   dir + ":x",
+		wantErr: true,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			abs, err := resolveFirewallLog(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if abs != tt.input {
+				t.Fatalf("resolveFirewallLog(%q) = %q, want %q", tt.input, abs, tt.input)
+			}
+		})
+	}
+}
+
 // testFlagSet builds the production run flag set for tests that only need
 // flag recognition (splitFlags derives it from the registered set).
 func testFlagSet() *flag.FlagSet { return newRunFlags().fs }
