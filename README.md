@@ -52,7 +52,7 @@ isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>]
 | `--config`       | Host dir mounted read-write as the agent's config dir (`~/.pi`, `~/.claude`)         |
 | `--config-file`  | Host file mounted as `~/.claude.json` (claude only; must exist)                      |
 | `--sessions`     | Host dir mounted as pi's session history (pi only)                                   |
-| `--firewall-log` | Existing host dir that receives `firewall.json`, the `ollama` firewall's drops       |
+| `--firewall-log` | Existing host dir; each run logs the `ollama` firewall's drops to its own subdir     |
 | `--secrets-file` | `key=value` file passed via `container run --env-file`; repeatable                   |
 | `--memory`       | VM memory limit, default `4g`; `--memory=` for none                                  |
 
@@ -102,8 +102,16 @@ run:claude` does, since Claude Code needs Anthropic's API.
 
 The firewall sends dropped packets (rate-limited to 10/s) through NFLOG to `ulogd`, not the kernel
 log, which writes them one JSON object per line to `/var/log/isolate/firewall.json`. Pass
-`--firewall-log <dir>` to mount a host directory there and keep the log after the run; ulogd's
-own errors go to `ulogd.log` beside it. If logging can't start, the run continues with a warning.
+`--firewall-log <dir>` to keep the log after the run: each run creates its own
+`<dir>/<time>-<agent>-<suffix>/` (UTC start time, e.g. `20261103T141502Z-claude-7f3a`) and mounts
+only that, so concurrent runs never share a file and can't see each other's logs. ulogd's own
+errors go to `ulogd.log` beside `firewall.json`. If logging can't start, the run continues with a
+warning. To query every run at once, e.g. with DuckDB:
+
+```sql
+SELECT regexp_extract(filename, '([^/]+)/firewall\.json$', 1) AS run, *
+FROM read_json_auto('<dir>/*/firewall.json', filename = true);
+```
 
 ## Agent user
 
