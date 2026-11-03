@@ -20,6 +20,7 @@ type profile struct {
 	Config       string   `json:"config"`
 	ConfigFile   string   `json:"config-file"`
 	Sessions     string   `json:"sessions"`
+	FirewallLog  string   `json:"firewall-log"`
 	SecretsFiles []string `json:"secrets-file"`
 	Memory       string   `json:"memory"`
 }
@@ -48,6 +49,7 @@ func loadProfile(path string) (*profile, error) {
 	p.Config = rel(p.Config)
 	p.ConfigFile = rel(p.ConfigFile)
 	p.Sessions = rel(p.Sessions)
+	p.FirewallLog = rel(p.FirewallLog)
 	for i, sf := range p.SecretsFiles {
 		p.SecretsFiles[i] = rel(sf)
 	}
@@ -70,6 +72,7 @@ func (p *profile) apply(fs *flag.FlagSet) error {
 		{flagConfig, []string{p.Config}},
 		{flagConfigFile, []string{p.ConfigFile}},
 		{flagSessions, []string{p.Sessions}},
+		{flagFirewallLog, []string{p.FirewallLog}},
 		{flagSecretsFile, p.SecretsFiles},
 		{flagMemory, []string{p.Memory}},
 	}

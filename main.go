@@ -18,6 +18,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		runCmd(os.Args[2:])
+	case "generate":
+		generateCmd(os.Args[2:])
 	case "version":
 		fmt.Println("isolate " + version)
 	case "-h", "--help", "help":

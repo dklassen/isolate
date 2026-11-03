@@ -33,7 +33,7 @@ func TestNetworkDefaultsToOllama(t *testing.T) {
 }
 
 func TestNetworkModeRunArgs(t *testing.T) {
-	egress := "ISOLATE_EGRESS=" + hostAlias + ":" + strconv.Itoa(ollamaPort)
+	egress := "ISOLATE_EGRESS=" + hostAlias + "=" + hostAliasIP + ":" + strconv.Itoa(ollamaPort)
 
 	tests := []struct {
 		mode networkMode

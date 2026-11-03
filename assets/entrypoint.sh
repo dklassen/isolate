@@ -1,5 +1,55 @@
 #!/bin/sh
-set -e
+set -eu
+
+# $1 is iptables or ip6tables. The limit stops a retry loop flooding the log.
+log_dropped() {
+  $log_drops || return 0
+  if ! "$1" -A OUTPUT -m limit --limit 10/s --limit-burst 20 -j NFLOG --nflog-group 1 --nflog-prefix "$1-drop"; then
+    echo "entrypoint.sh: warning: cannot add the $1 NFLOG rule; dropped packets won't be logged" >&2
+  fi
+}
+
+# lock_egress host=ip:port allows outbound traffic to that one address only.
+# Any failure aborts the run rather than starting unrestricted.
+lock_egress() {
+  case "$1" in
+  ?*=?*:?*) ;;
+  *)
+    echo "entrypoint.sh: error: ISOLATE_EGRESS=$1 is not host=ip:port; refusing to start without the egress firewall" >&2
+    exit 1
+    ;;
+  esac
+  egress_host="${1%%=*}"
+  egress_addr="${1#*=}"
+  egress_ip="${egress_addr%:*}"
+  egress_port="${egress_addr##*:}"
+
+  # Host-only networks have no working DNS, so the IP is passed in rather
+  # than resolved, and pinned for the agent.
+  echo "$egress_ip $egress_host" >>/etc/hosts
+
+  # Dropped packets go to ulogd (assets/ulogd.conf) rather than the kernel
+  # log, so they land in its firewall.json and nowhere else. Logging is
+  # best-effort: without it the firewall still holds.
+  log_drops=true
+  if ! ulogd -d -c /etc/ulogd.conf; then
+    echo "entrypoint.sh: warning: ulogd failed to start (see the logfile in /etc/ulogd.conf); dropped packets won't be logged" >&2
+    log_drops=false
+  fi
+
+  iptables -F OUTPUT
+  iptables -A OUTPUT -o lo -j ACCEPT
+  iptables -A OUTPUT -p tcp -d "$egress_ip" --dport "$egress_port" -j ACCEPT
+  log_dropped iptables
+  iptables -P OUTPUT DROP
+  if [ -e /proc/net/if_inet6 ]; then
+    ip6tables -F OUTPUT
+    ip6tables -A OUTPUT -o lo -j ACCEPT
+    log_dropped ip6tables
+    ip6tables -P OUTPUT DROP
+  fi
+  echo "entrypoint.sh: network locked to $egress_host ($egress_ip):$egress_port"
+}
 
 agent="${1:?usage: entrypoint.sh <agent> [args...]}"
 shift
@@ -9,30 +59,9 @@ shift
 # firewall or /etc/hosts, or regain root through a setuid binary.
 as_agent="setpriv --reuid=agent --regid=agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs --"
 
-# ISOLATE_EGRESS=host:port (--network ollama in network.go) allows outbound
-# traffic to that one address only. Any failure here aborts the run rather
-# than starting unrestricted.
-if [ -n "$ISOLATE_EGRESS" ]; then
-  egress_host="${ISOLATE_EGRESS%:*}"
-  egress_port="${ISOLATE_EGRESS##*:}"
-  egress_ip=$(getent ahostsv4 "$egress_host" | awk 'NR == 1 { print $1 }')
-  if [ -z "$egress_ip" ]; then
-    echo "entrypoint.sh: error: cannot resolve $egress_host; refusing to start without the egress firewall" >&2
-    exit 1
-  fi
-  # DNS is blocked below, so pin the one name the agent needs.
-  echo "$egress_ip $egress_host" >>/etc/hosts
-
-  iptables -F OUTPUT
-  iptables -A OUTPUT -o lo -j ACCEPT
-  iptables -A OUTPUT -p tcp -d "$egress_ip" --dport "$egress_port" -j ACCEPT
-  iptables -P OUTPUT DROP
-  if [ -e /proc/net/if_inet6 ]; then
-    ip6tables -F OUTPUT
-    ip6tables -A OUTPUT -o lo -j ACCEPT
-    ip6tables -P OUTPUT DROP
-  fi
-  echo "entrypoint.sh: network locked to $egress_host ($egress_ip):$egress_port"
+# ISOLATE_EGRESS is set by --network ollama (network.go).
+if [ -n "${ISOLATE_EGRESS:-}" ]; then
+  lock_egress "$ISOLATE_EGRESS"
 fi
 
 # container creates missing parents of mount points (e.g. ~/.pi/agent under

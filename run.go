@@ -24,6 +24,7 @@ type runFlags struct {
 	config       *string
 	configFile   *string
 	sessions     *string
+	firewallLog  *string
 	secretsFiles *stringSlice
 	memory       *string
 	help         *bool
@@ -38,6 +39,7 @@ const (
 	flagConfig      = "config"
 	flagConfigFile  = "config-file"
 	flagSessions    = "sessions"
+	flagFirewallLog = "firewall-log"
 	flagSecretsFile = "secrets-file"
 	flagMemory      = "memory"
 )
@@ -55,6 +57,7 @@ func newRunFlags() *runFlags {
 		config:       fs.String(flagConfig, "", "Path to an existing host config directory, live-mounted read-write as the agent's config directory (session history, installed extensions, and other runtime writes persist back to this directory)"),
 		configFile:   fs.String(flagConfigFile, "", "Path to a single host config file, live-mounted read-write as the agent's top-level config file (only supported by agents that have one, e.g. claude's ~/.claude.json)"),
 		sessions:     fs.String(flagSessions, "", "Path to a host directory to live-mount as the agent's session history directory, persisting sessions across runs (only supported by agents with a separate sessions directory, e.g. pi)"),
+		firewallLog:  fs.String(flagFirewallLog, "", "Path to an existing host directory to mount at "+firewallLogDir+", where packets dropped by the firewall are logged as JSON lines (firewall.json); only --network ollama has a firewall, so in other modes it stays empty"),
 		memory:       fs.String(flagMemory, "4g", "Memory limit passed to 'container run --memory' (e.g. 4g); set empty to run without a limit"),
 		secretsFiles: &secretsFiles,
 		help:         fs.Bool("help", false, "Show help for 'isolate run'"),
@@ -232,12 +235,20 @@ func runCmd(args []string) {
 	}
 	mounts, err := buildMounts(agent, *rf.config, *rf.configFile, *rf.sessions)
 	must(err)
+
 	runArgs = append(runArgs, mounts...)
+	if *rf.firewallLog != "" {
+		abs, err := resolveFirewallLog(*rf.firewallLog)
+		must(err)
+		runArgs = append(runArgs, "-v", abs+":"+firewallLogDir)
+	}
+
 	for _, sf := range *rf.secretsFiles {
 		abs, err := resolveSecretsFile(sf)
 		must(err)
 		runArgs = append(runArgs, "--env-file", abs)
 	}
+
 	runArgs = append(runArgs, imageRef, agent.Name)
 	if *rf.model != "" {
 		runArgs = append(runArgs, "--model", *rf.model)
@@ -339,6 +350,29 @@ func resolveSecretsFile(path string) (string, error) {
 	}
 	if _, err := os.Stat(abs); err != nil {
 		return "", fmt.Errorf("--secrets-file: %w", err)
+	}
+	return abs, nil
+}
+
+// resolveFirewallLog validates that a --firewall-log host path is an existing
+// directory that can be mounted, and returns its absolute form.
+func resolveFirewallLog(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if err := checkMountHostPath(abs); err != nil {
+		return "", fmt.Errorf("--firewall-log: %v", err)
+	}
+	info, err := os.Stat(abs)
+	if errors.Is(err, iofs.ErrNotExist) {
+		return "", fmt.Errorf("--firewall-log: directory %s does not exist; create it first", abs)
+	}
+	if err != nil {
+		return "", fmt.Errorf("--firewall-log: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--firewall-log: %s is not a directory", abs)
 	}
 	return abs, nil
 }

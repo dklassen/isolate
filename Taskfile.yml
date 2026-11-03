@@ -8,7 +8,7 @@ vars:
   CLAUDE_CONFIG: assets/agents/claude/config/home
   CLAUDE_CONFIG_FILE: assets/agents/claude/config/claude.json
   SECRETS_FILE: assets/env/secrets.env
-  # Keep in sync with hostAlias and the hint in container.go
+  # Keep in sync with hostAlias and hostAliasIP in container.go
   HOST_ALIAS: host.container.internal
   HOST_ALIAS_IP: 203.0.113.113
   # Keep in sync with hostOnlyNetwork in network.go
@@ -18,6 +18,10 @@ vars:
   # positional (task run <folder>) or via env: CLI_ARGS=. task run
 
 tasks:
+  dev:up:
+    desc: Setup the environment for development
+    deps: [system:dns, system:network]
+
   build:
     desc: Compile the isolate binary, then clean and rebuild the container image
     silent: true
@@ -198,8 +202,15 @@ tasks:
     deps: [system:check]
     cmds:
       - |
-        if container system dns list | grep -qF {{.HOST_ALIAS}}; then
+        # dns list prints only the domain; the --localhost address is in the
+        # resolver file dns create writes (dnsResolverPrefix in container.go).
+        resolver=/etc/resolver/containerization.{{.HOST_ALIAS}}
+        if grep -qx "options localhost:{{.HOST_ALIAS_IP}}" "$resolver" 2>/dev/null; then
           echo "{{.HOST_ALIAS}} already registered"
+        elif [ -e "$resolver" ]; then
+          echo "{{.HOST_ALIAS}} is registered without --localhost {{.HOST_ALIAS_IP}}; re-registering"
+          sudo container system dns delete {{.HOST_ALIAS}}
+          sudo container system dns create {{.HOST_ALIAS}} --localhost {{.HOST_ALIAS_IP}}
         else
           sudo container system dns create {{.HOST_ALIAS}} --localhost {{.HOST_ALIAS_IP}}
         fi
@@ -236,4 +247,6 @@ tasks:
   images:build:
     desc: Build the isolate-agents image
     silent: true
-    cmd: container build -f assets/Containerfile -t {{.IMAGE_REF}} assets
+    cmds:
+      - go generate .
+      - container build -f assets/Containerfile -t {{.IMAGE_REF}} assets
