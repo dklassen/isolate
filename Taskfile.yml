@@ -8,6 +8,8 @@ vars:
   CLAUDE_CONFIG: assets/agents/claude/config/home
   CLAUDE_CONFIG_FILE: assets/agents/claude/config/claude.json
   SECRETS_FILE: assets/env/secrets.env
+  FIREWALL_LOG:
+    sh: echo "${XDG_DATA_HOME:-$HOME/.local/share}/isolate/firewall"
   # Keep in sync with hostAlias and hostAliasIP in container.go
   HOST_ALIAS: host.container.internal
   HOST_ALIAS_IP: 203.0.113.113
@@ -63,7 +65,8 @@ tasks:
       - sh: test -f {{.BIN}}
         msg: "{{.BIN}} is missing. Build it first with: go tool task build"
     cmds:
-      - ./{{.BIN}} run --agent pi --config {{.PI_CONFIG}} {{.CLI_ARGS}}
+      - mkdir -p "{{.FIREWALL_LOG}}"
+      - ./{{.BIN}} run --agent pi --config {{.PI_CONFIG}} --firewall-log "{{.FIREWALL_LOG}}" {{.CLI_ARGS}}
 
   run:claude:
     desc: "Run isolate with the Claude Code agent, using assets/agents/claude/config for config (usage: task run:claude <folder>)"

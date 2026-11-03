@@ -57,7 +57,8 @@ isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>]
 | `--memory`       | VM memory limit, default `4g`; `--memory=` for none                                  |
 
 The folder is created if missing; if it contains a `go.mod`, dependencies are downloaded first.
-`go tool task run` fills in the checked-in config paths and passes no secrets. `run:claude` also
+`go tool task run` fills in the checked-in config paths, keeps firewall logs under
+`${XDG_DATA_HOME:-~/.local/share}/isolate/firewall`, and passes no secrets. `run:claude` also
 passes `assets/env/secrets.env` if present (template:
 [secrets.env.example](assets/env/secrets.env.example)).
 
