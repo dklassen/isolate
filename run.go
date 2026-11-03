@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // runFlags bundles the `isolate run` CLI. The flag set is the single source
@@ -57,7 +60,7 @@ func newRunFlags() *runFlags {
 		config:       fs.String(flagConfig, "", "Path to an existing host config directory, live-mounted read-write as the agent's config directory (session history, installed extensions, and other runtime writes persist back to this directory)"),
 		configFile:   fs.String(flagConfigFile, "", "Path to a single host config file, live-mounted read-write as the agent's top-level config file (only supported by agents that have one, e.g. claude's ~/.claude.json)"),
 		sessions:     fs.String(flagSessions, "", "Path to a host directory to live-mount as the agent's session history directory, persisting sessions across runs (only supported by agents with a separate sessions directory, e.g. pi)"),
-		firewallLog:  fs.String(flagFirewallLog, "", "Path to an existing host directory to mount at "+firewallLogDir+", where packets dropped by the firewall are logged as JSON lines (firewall.json); only --network ollama has a firewall, so in other modes it stays empty"),
+		firewallLog:  fs.String(flagFirewallLog, "", "Path to an existing host directory; each run creates its own <time>-<agent>-<suffix> subdirectory there, mounted at "+firewallLogDir+", where packets dropped by the firewall are logged as JSON lines (firewall.json); only --network ollama has a firewall, so in other modes it stays empty"),
 		memory:       fs.String(flagMemory, "4g", "Memory limit passed to 'container run --memory' (e.g. 4g); set empty to run without a limit"),
 		secretsFiles: &secretsFiles,
 		help:         fs.Bool("help", false, "Show help for 'isolate run'"),
@@ -225,10 +228,13 @@ func runCmd(args []string) {
 	mounts, err := buildMounts(agent, *rf.config, *rf.configFile, *rf.sessions)
 	must(err)
 	c.mounts = append(c.mounts, mounts...)
+	var runLogDir string
 	if *rf.firewallLog != "" {
 		abs, err := resolveFirewallLog(*rf.firewallLog)
 		must(err)
-		c.mounts = append(c.mounts, mount{abs, firewallLogDir})
+		runLogDir, err = newRunLogDir(abs, agent.Name, time.Now())
+		must(err)
+		c.mounts = append(c.mounts, mount{runLogDir, firewallLogDir})
 	}
 	for _, sf := range *rf.secretsFiles {
 		abs, err := resolveSecretsFile(sf)
@@ -246,6 +252,9 @@ func runCmd(args []string) {
 	fmt.Println("--- Container Sandbox Active ---")
 	fmt.Printf("Isolating to: %s\n", absTarget)
 	fmt.Printf("Network: %s\n", netMode)
+	if runLogDir != "" {
+		fmt.Printf("Firewall log: %s\n", runLogDir)
+	}
 
 	runErr := runtime.Run(c)
 
@@ -362,6 +371,23 @@ func resolveFirewallLog(path string) (string, error) {
 		return "", fmt.Errorf("--firewall-log: %s is not a directory", abs)
 	}
 	return abs, nil
+}
+
+// newRunLogDir creates this run's own subdirectory of the --firewall-log
+// directory, so concurrent runs never share a file and each container sees
+// only its own log. Names sort by start time in UTC, like ulogd's
+// timestamps; the suffix separates runs started in the same second.
+func newRunLogDir(parent, agent string, now time.Time) (string, error) {
+	suffix := make([]byte, 2)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", err
+	}
+	name := now.UTC().Format("20060102T150405Z") + "-" + agent + "-" + hex.EncodeToString(suffix)
+	dir := filepath.Join(parent, name)
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		return "", fmt.Errorf("--firewall-log: %w", err)
+	}
+	return dir, nil
 }
 
 // stdinIsTTY reports whether isolate's standard input is a terminal. `container

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type buildMountsCase struct {
@@ -299,6 +300,33 @@ func TestResolveFirewallLog(t *testing.T) {
 				t.Fatalf("resolveFirewallLog(%q) = %q, want %q", tt.input, abs, tt.input)
 			}
 		})
+	}
+}
+
+func TestNewRunLogDir(t *testing.T) {
+	parent := t.TempDir()
+	now := time.Date(2026, 11, 3, 9, 15, 2, 0, time.FixedZone("EST", -5*3600))
+
+	first, err := newRunLogDir(parent, "claude", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newRunLogDir(parent, "claude", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if filepath.Dir(first) != parent {
+		t.Fatalf("newRunLogDir = %q, want a child of %q", first, parent)
+	}
+	if want := now.UTC().Format("20060102T150405Z") + "-claude-"; !strings.HasPrefix(filepath.Base(first), want) {
+		t.Fatalf("newRunLogDir = %q, want name starting %q", filepath.Base(first), want)
+	}
+	if info, err := os.Stat(first); err != nil || !info.IsDir() {
+		t.Fatalf("newRunLogDir did not create directory %q: %v", first, err)
+	}
+	if first == second {
+		t.Fatalf("two runs in the same second share %q", first)
 	}
 }
 
