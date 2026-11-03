@@ -9,14 +9,6 @@ log_dropped() {
   fi
 }
 
-agent="${1:?usage: entrypoint.sh <agent> [args...]}"
-shift
-
-# Only the setup below runs as root. Everything after it runs as the agent
-# user with no capabilities and no_new_privs, so it can't change the
-# firewall or /etc/hosts, or regain root through a setuid binary.
-as_agent="setpriv --reuid=agent --regid=agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs --"
-
 # lock_egress host=ip:port allows outbound traffic to that one address only.
 # Any failure aborts the run rather than starting unrestricted.
 lock_egress() {
@@ -58,6 +50,14 @@ lock_egress() {
   fi
   echo "entrypoint.sh: network locked to $egress_host ($egress_ip):$egress_port"
 }
+
+agent="${1:?usage: entrypoint.sh <agent> [args...]}"
+shift
+
+# Only the setup below runs as root. Everything after it runs as the agent
+# user with no capabilities and no_new_privs, so it can't change the
+# firewall or /etc/hosts, or regain root through a setuid binary.
+as_agent="setpriv --reuid=agent --regid=agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs --"
 
 # ISOLATE_EGRESS is set by --network ollama (network.go).
 if [ -n "${ISOLATE_EGRESS:-}" ]; then
