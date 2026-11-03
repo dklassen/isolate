@@ -1,16 +1,15 @@
 # isolate
 
 Runs an AI coding agent ([Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code) or
-[`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)) on a Mac inside a disposable
-Linux VM that can see exactly one host folder.
+[`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)) on a Mac inside a VM.
 
 - **One mounted folder** at `/workspace`, the only host path the agent can change.
 - **Optional persistent config** for the agent (settings, login, session history), mounted from a
   directory you choose instead of your real one.
-- **Optional secrets file** (e.g. `GH_TOKEN`) passed in as env vars, never read or logged by isolate.
+- **Optional secrets file** (e.g. `GH_TOKEN`) passed in via environment variables
 - **Pinned toolchain**: Node, Go, git, `jq`, ssh, `gh`, and both agents with their extensions at
   locked versions.
-- **Memory limit** of 4g by default.
+- Configurable **network access**: Ollama API only, host-only, or full internet. Logging of dropped packets for later analysis.
 
 ## Requirements
 
@@ -24,15 +23,15 @@ reboot, start `container` and register `host.container.internal` so containers c
 host (prompts for sudo).
 
 ```bash
-go tool task system:network   # once
-go tool task system:dns       # after each reboot
+go tool task dev:up
 ```
 
 ## Usage
 
 ```bash
+go tool task compile                  # build bin/isolate
 go tool task build                    # build bin/isolate and the isolate-agents image
-go tool task run -- <folder>          # run pi, network locked to Ollama
+go tool task run -- <folder>          # run pi, network isolated to host Ollama service
 go tool task run:claude -- <folder>   # run Claude Code, with internet
 ```
 
@@ -43,18 +42,18 @@ isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>]
                      [--memory <size>] [-- <agent args>...]
 ```
 
-| Flag             | Effect                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------ |
-| `--profile`      | JSON file that sets any of the flags below; flags on the command line override it    |
-| `--agent`        | `pi` (default) or `claude`                                                           |
-| `--model`        | Passed to the agent as `--model`, e.g. `ollama/qwen3-coder:30b` for pi               |
-| `--network`      | `ollama` (default), `host` or `open`; see [Network modes](#network-modes)            |
-| `--config`       | Host dir mounted read-write as the agent's config dir (`~/.pi`, `~/.claude`)         |
-| `--config-file`  | Host file mounted as `~/.claude.json` (claude only; must exist)                      |
-| `--sessions`     | Host dir mounted as pi's session history (pi only)                                   |
-| `--firewall-log` | Existing host dir; each run logs the `ollama` firewall's drops to its own subdir     |
-| `--secrets-file` | `key=value` file passed via `container run --env-file`; repeatable                   |
-| `--memory`       | VM memory limit, default `4g`; `--memory=` for none                                  |
+| Flag             | Effect                                                                            |
+| ---------------- | --------------------------------------------------------------------------------- |
+| `--profile`      | JSON file that sets any of the flags below; flags on the command line override it |
+| `--agent`        | `pi` (default) or `claude`                                                        |
+| `--model`        | Passed to the agent as `--model`, e.g. `ollama/qwen3-coder:30b` for pi            |
+| `--network`      | `ollama` (default), `host` or `open`; see [Network modes](#network-modes)         |
+| `--config`       | Host dir mounted read-write as the agent's config dir (`~/.pi`, `~/.claude`)      |
+| `--config-file`  | Host file mounted as `~/.claude.json` (claude only; must exist)                   |
+| `--sessions`     | Host dir mounted as pi's session history (pi only)                                |
+| `--firewall-log` | Existing host dir; each run logs the `ollama` firewall's drops to its own subdir  |
+| `--secrets-file` | `key=value` file passed via `container run --env-file`; repeatable                |
+| `--memory`       | VM memory limit, default `4g`; `--memory=` for none                               |
 
 The folder is created if missing; if it contains a `go.mod`, dependencies are downloaded first.
 `go tool task run` fills in the checked-in config paths, keeps firewall logs under
@@ -74,7 +73,7 @@ flag names, and relative paths are relative to the profile file:
 ```json
 {
   "agent": "pi",
-  "model": "ollama/qwen3-coder:30b",
+  "model": "sketch/my-ablated-model:latest",
   "network": "ollama",
   "config": "../agents/pi/config-ablated"
 }
@@ -88,11 +87,11 @@ A model named in `model` must also be listed in that config's `agent/models.json
 
 ## Network modes
 
-| Mode     | Reaches                                                                          |
-| -------- | -------------------------------------------------------------------------------- |
-| `ollama` | Default. Only `host.container.internal:11434`; no internet, no other host ports  |
-| `host`   | Any port on the host; no internet (`--internal` host-only network)               |
-| `open`   | Internet and host (container's default network)                                  |
+| Mode     | Reaches                                                                         |
+| -------- | ------------------------------------------------------------------------------- |
+| `ollama` | Default. Only `host.container.internal:11434`; no internet, no other host ports |
+| `host`   | Any port on the host; no internet (`--internal` host-only network)              |
+| `open`   | Internet and host (container's default network)                                 |
 
 `ollama` and `host` use the host-only network from `go tool task system:network`. In `ollama`
 mode, the entrypoint installs an iptables egress allowlist as root, then starts the agent as the

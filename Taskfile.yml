@@ -24,6 +24,10 @@ tasks:
     desc: Setup the environment for development
     deps: [system:dns, system:network]
 
+  dev:down:
+    desc: Undo dev:up -- remove the host alias and the host-only network
+    deps: [system:dns:delete, system:network:delete]
+
   build:
     desc: Compile the isolate binary, then clean and rebuild the container image
     silent: true
@@ -228,6 +232,30 @@ tasks:
           echo "{{.HOST_ONLY_NETWORK}} already exists"
         else
           container network create --internal {{.HOST_ONLY_NETWORK}}
+        fi
+
+  system:dns:delete:
+    desc: "Unregister {{.HOST_ALIAS}} (needs sudo)"
+    silent: true
+    deps: [system:check]
+    cmds:
+      - |
+        if [ -e /etc/resolver/containerization.{{.HOST_ALIAS}} ]; then
+          sudo container system dns delete {{.HOST_ALIAS}}
+        else
+          echo "{{.HOST_ALIAS}} not registered"
+        fi
+
+  system:network:delete:
+    desc: "Delete the host-only {{.HOST_ONLY_NETWORK}} network"
+    silent: true
+    deps: [system:check]
+    cmds:
+      - |
+        if container network list -q | grep -qx {{.HOST_ONLY_NETWORK}}; then
+          container network delete {{.HOST_ONLY_NETWORK}}
+        else
+          echo "{{.HOST_ONLY_NETWORK}} does not exist"
         fi
 
   images:check:
