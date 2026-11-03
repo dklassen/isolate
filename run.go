@@ -212,55 +212,42 @@ func runCmd(args []string) {
 		fatalf("cannot find 'container' in PATH")
 	}
 
-	manager := NewContainerManager(appleContainer{bin: containerBin})
-	must(manager.Validate(netMode.network()))
+	c := container{
+		image:       imageRef,
+		hostAlias:   hostAlias,
+		hostAliasIP: hostAliasIP,
+		mounts:      []mount{{absTarget, "/workspace"}},
+		memory:      *rf.memory,
+		tty:         stdinIsTTY(),
+		command:     []string{agent.Name},
+	}
+	netMode.apply(&c)
+	mounts, err := buildMounts(agent, *rf.config, *rf.configFile, *rf.sessions)
+	must(err)
+	c.mounts = append(c.mounts, mounts...)
+	if *rf.firewallLog != "" {
+		abs, err := resolveFirewallLog(*rf.firewallLog)
+		must(err)
+		c.mounts = append(c.mounts, mount{abs, firewallLogDir})
+	}
+	for _, sf := range *rf.secretsFiles {
+		abs, err := resolveSecretsFile(sf)
+		must(err)
+		c.envFiles = append(c.envFiles, abs)
+	}
+	if *rf.model != "" {
+		c.command = append(c.command, "--model", *rf.model)
+	}
+	c.command = append(c.command, agentArgs...)
+
+	var runtime containerRuntime = newAppleRuntime(containerBin)
+	must(runtime.Check(c))
 
 	fmt.Println("--- Container Sandbox Active ---")
 	fmt.Printf("Isolating to: %s\n", absTarget)
 	fmt.Printf("Network: %s\n", netMode)
 
-	// -t demands a terminal attached to stdin; scripts and CI don't have one,
-	// so drop the TTY in that case rather than failing the run (issue: -it was
-	// previously unconditional and broke non-interactive invocations).
-	runArgs := []string{"run", "--rm"}
-	if stdinIsTTY() {
-		runArgs = append(runArgs, "-it")
-	} else {
-		runArgs = append(runArgs, "-i")
-	}
-	runArgs = append(runArgs, "-v", absTarget+":/workspace")
-	runArgs = append(runArgs, netMode.runArgs()...)
-	if *rf.memory != "" {
-		runArgs = append(runArgs, "--memory", *rf.memory)
-	}
-	mounts, err := buildMounts(agent, *rf.config, *rf.configFile, *rf.sessions)
-	must(err)
-
-	runArgs = append(runArgs, mounts...)
-	if *rf.firewallLog != "" {
-		abs, err := resolveFirewallLog(*rf.firewallLog)
-		must(err)
-		runArgs = append(runArgs, "-v", abs+":"+firewallLogDir)
-	}
-
-	for _, sf := range *rf.secretsFiles {
-		abs, err := resolveSecretsFile(sf)
-		must(err)
-		runArgs = append(runArgs, "--env-file", abs)
-	}
-
-	runArgs = append(runArgs, imageRef, agent.Name)
-	if *rf.model != "" {
-		runArgs = append(runArgs, "--model", *rf.model)
-	}
-	runArgs = append(runArgs, agentArgs...)
-
-	//nolint:gosec // containerBin is resolved via exec.LookPath; running it is this tool's entire purpose
-	cmd := exec.Command(containerBin, runArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	runErr := cmd.Run()
+	runErr := runtime.Run(c)
 
 	var exitErr *exec.ExitError
 	if errors.As(runErr, &exitErr) {
@@ -269,11 +256,11 @@ func runCmd(args []string) {
 	must(runErr)
 }
 
-// buildMounts resolves --config, --config-file, and --sessions into
-// "-v host:container" mount arguments for the given agent, validating that
-// each flag's mount point is one the agent actually supports.
-func buildMounts(agent *Agent, config, configFile, sessions string) ([]string, error) {
-	var mounts []string
+// buildMounts resolves --config, --config-file, and --sessions into mounts
+// for the given agent, validating that each flag's mount point is one the
+// agent actually supports.
+func buildMounts(agent *Agent, config, configFile, sessions string) ([]mount, error) {
+	var mounts []mount
 	if config != "" {
 		abs, err := filepath.Abs(config)
 		if err != nil {
@@ -293,7 +280,7 @@ func buildMounts(agent *Agent, config, configFile, sessions string) ([]string, e
 		if !info.IsDir() {
 			return nil, fmt.Errorf("--config: %s is not a directory", abs)
 		}
-		mounts = append(mounts, "-v", abs+":"+agent.ConfigDir)
+		mounts = append(mounts, mount{abs, agent.ConfigDir})
 	}
 	if configFile != "" {
 		if agent.ConfigFile == "" {
@@ -309,7 +296,7 @@ func buildMounts(agent *Agent, config, configFile, sessions string) ([]string, e
 		if _, err := os.Stat(abs); err != nil {
 			return nil, fmt.Errorf("--config-file: %w", err)
 		}
-		mounts = append(mounts, "-v", abs+":"+agent.ConfigFile)
+		mounts = append(mounts, mount{abs, agent.ConfigFile})
 	}
 	if sessions != "" {
 		if agent.SessionsDir == "" {
@@ -325,7 +312,7 @@ func buildMounts(agent *Agent, config, configFile, sessions string) ([]string, e
 		if err := os.MkdirAll(abs, 0o750); err != nil {
 			return nil, err
 		}
-		mounts = append(mounts, "-v", abs+":"+agent.SessionsDir)
+		mounts = append(mounts, mount{abs, agent.SessionsDir})
 	}
 	return mounts, nil
 }

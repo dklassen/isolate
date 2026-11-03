@@ -46,28 +46,15 @@ func parseNetworkMode(s string) (networkMode, error) {
 	return 0, fmt.Errorf("unknown network mode %q (known: %s)", s, strings.Join(networkModeNames[:], ", "))
 }
 
-// network is the container network m attaches to, or "" for the default.
-func (m networkMode) network() string {
-	if m == networkOpen {
-		return ""
-	}
-	return hostOnlyNetwork
-}
-
-// runArgs returns the `container run` arguments that put the container in
-// mode m.
-func (m networkMode) runArgs() []string {
-	var args []string
-	if n := m.network(); n != "" {
-		args = append(args, "--network", n)
+// apply puts c in mode m.
+func (m networkMode) apply(c *container) {
+	if m != networkOpen {
+		c.network = hostOnlyNetwork
 	}
 	if m == networkOllama {
 		// entrypoint.sh needs NET_ADMIN to install the firewall, then drops
 		// it before starting the agent so the agent can't remove the rules.
-		args = append(args,
-			"--cap-add", "NET_ADMIN",
-			"--env", "ISOLATE_EGRESS="+hostAlias+"="+hostAliasIP+":"+strconv.Itoa(ollamaPort),
-		)
+		c.caps = append(c.caps, "NET_ADMIN")
+		c.env = append(c.env, "ISOLATE_EGRESS="+c.hostAlias+"="+c.hostAliasIP+":"+strconv.Itoa(ollamaPort))
 	}
-	return args
 }

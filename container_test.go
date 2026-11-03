@@ -1,44 +1,14 @@
 package main
 
 import (
-	"errors"
-	"io/fs"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// fakeProbe is a containerProbe built out of plain data. It lets the manager
-// policy run without executing any process, so these tests verify the
-// manager's decisions, not a shell's: no PATH, no #!/bin/sh, no printf/echo
-// semantics, no exit codes. The only thing in play is containerManager and
-// the policy functions it calls.
-type fakeProbe struct {
-	images    string
-	resolvers map[string]string // registered domain -> resolver file
-	networks  string
-
-	imagesErr   error
-	dnsErr      error
-	networksErr error
-}
-
-func (f *fakeProbe) imageRefs() (string, error) { return f.images, f.imagesErr }
-
-func (f *fakeProbe) dnsResolver(domain string) (string, error) {
-	if f.dnsErr != nil {
-		return "", f.dnsErr
-	}
-	r, ok := f.resolvers[domain]
-	if !ok {
-		return "", fs.ErrNotExist
-	}
-	return r, nil
-}
-
-func (f *fakeProbe) networkNames() (string, error) { return f.networks, f.networksErr }
-
 func TestImageListContains(t *testing.T) {
-	// ImageRef's name without the tag; the manager and this test both
+	// ImageRef's name without the tag; checkImage and this test both
 	// parameterize against the same constant, so pin the tag logic here
 	// against a fixed reference.
 	name, _, _ := strings.Cut(imageRef, ":")
@@ -86,28 +56,33 @@ func TestImageListContains(t *testing.T) {
 	}
 }
 
-func TestValidateImageWithProbe(t *testing.T) {
-	name, _, _ := strings.Cut(imageRef, ":")
+func TestNetworkListContains(t *testing.T) {
+	tests := []struct {
+		name     string
+		list     string
+		contains bool
+	}{{
+		name:     "listed among others",
+		list:     "default\n" + hostOnlyNetwork + "\n",
+		contains: true,
+	}, {
+		name:     "line is trimmed before matching",
+		list:     "  " + hostOnlyNetwork + " \n",
+		contains: true,
+	}, {
+		name: "longer name sharing the prefix does not satisfy",
+		list: "default\n" + hostOnlyNetwork + "-old\n",
+	}, {
+		name: "empty list does not satisfy",
+	}}
 
-	t.Run("image reported present passes", func(t *testing.T) {
-		if err := NewContainerManager(&fakeProbe{images: name + ":0.0.1\n" + imageRef + "\n"}).validateImage(); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("only a stale tag reported fails", func(t *testing.T) {
-		if err := NewContainerManager(&fakeProbe{images: name + ":0.0.1\n"}).validateImage(); err == nil {
-			t.Fatal("expected error, got nil")
-		}
-	})
-
-	t.Run("probe failure propagates, unwrapped by policy", func(t *testing.T) {
-		boom := errors.New("probe boom")
-		err := NewContainerManager(&fakeProbe{imagesErr: boom}).validateImage()
-		if !errors.Is(err, boom) {
-			t.Fatalf("err = %v, want it to wrap %v", err, boom)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := networkListContains(tt.list, hostOnlyNetwork); got != tt.contains {
+				t.Fatalf("networkListContains(%q, %q) = %v, want %v", tt.list, hostOnlyNetwork, got, tt.contains)
+			}
+		})
+	}
 }
 
 // resolverFile is what `container system dns create domain --localhost ip`
@@ -120,94 +95,101 @@ func resolverFile(domain, ip string) string {
 	return "domain " + domain + "\nsearch " + domain + "\nnameserver 127.0.0.1\nport 1053\n" + options
 }
 
-func TestValidateDNSWithProbe(t *testing.T) {
-	t.Run("alias registered with hostAliasIP passes", func(t *testing.T) {
-		p := &fakeProbe{resolvers: map[string]string{hostAlias: resolverFile(hostAlias, hostAliasIP)}}
-		if err := NewContainerManager(p).validateDNS(); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("alias absent fails", func(t *testing.T) {
-		p := &fakeProbe{resolvers: map[string]string{"test": resolverFile("test", "")}}
-		if err := NewContainerManager(p).validateDNS(); err == nil {
-			t.Fatal("expected error, got nil")
-		}
-	})
-
-	t.Run("alias registered with another address fails", func(t *testing.T) {
-		p := &fakeProbe{resolvers: map[string]string{hostAlias: resolverFile(hostAlias, "198.51.100.1")}}
-		if err := NewContainerManager(p).validateDNS(); err == nil {
-			t.Fatal("expected error, got nil")
-		}
-	})
-
-	t.Run("alias registered without --localhost fails", func(t *testing.T) {
-		p := &fakeProbe{resolvers: map[string]string{hostAlias: resolverFile(hostAlias, "")}}
-		if err := NewContainerManager(p).validateDNS(); err == nil {
-			t.Fatal("expected error, got nil")
-		}
-	})
-
-	t.Run("probe failure propagates, unwrapped by policy", func(t *testing.T) {
-		boom := errors.New("probe boom")
-		err := NewContainerManager(&fakeProbe{dnsErr: boom}).validateDNS()
-		if !errors.Is(err, boom) {
-			t.Fatalf("err = %v, want it to wrap %v", err, boom)
-		}
-	})
+func TestResolverLocalhost(t *testing.T) {
+	if got := resolverLocalhost(resolverFile(hostAlias, hostAliasIP)); got != hostAliasIP {
+		t.Fatalf("resolverLocalhost() = %q, want %q", got, hostAliasIP)
+	}
+	if got := resolverLocalhost(resolverFile(hostAlias, "")); got != "" {
+		t.Fatalf("resolverLocalhost() without --localhost = %q, want \"\"", got)
+	}
 }
 
-func TestValidateNetwork(t *testing.T) {
-	ready := fakeProbe{
-		images:    imageRef + "\n",
-		resolvers: map[string]string{hostAlias: resolverFile(hostAlias, hostAliasIP)},
+func TestCheckHostAlias(t *testing.T) {
+	// registered writes the resolver file `container system dns create`
+	// would for hostAlias into a fresh resolver directory.
+	registered := func(t *testing.T, ip string) appleRuntime {
+		a := appleRuntime{resolverPrefix: t.TempDir() + "/"}
+		if err := os.WriteFile(a.resolverPrefix+hostAlias, []byte(resolverFile(hostAlias, ip)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return a
 	}
 
-	t.Run("default network needs no lookup", func(t *testing.T) {
-		p := ready
-		p.networksErr = errors.New("must not be called")
-		if err := NewContainerManager(&p).Validate(""); err != nil {
+	t.Run("registered with the container's address passes", func(t *testing.T) {
+		if err := registered(t, hostAliasIP).checkHostAlias(hostAlias, hostAliasIP); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("network present passes", func(t *testing.T) {
-		p := ready
-		p.networks = "default\n" + hostOnlyNetwork + "\n"
-		if err := NewContainerManager(&p).Validate(hostOnlyNetwork); err != nil {
-			t.Fatalf("unexpected error: %v", err)
+	t.Run("not registered fails", func(t *testing.T) {
+		a := appleRuntime{resolverPrefix: t.TempDir() + "/"}
+		if err := a.checkHostAlias(hostAlias, hostAliasIP); err == nil {
+			t.Fatal("expected error, got nil")
 		}
 	})
 
-	t.Run("network absent fails", func(t *testing.T) {
-		p := ready
-		p.networks = "default\n" + hostOnlyNetwork + "-old\n"
-		if err := NewContainerManager(&p).Validate(hostOnlyNetwork); err == nil {
+	t.Run("registered with another address fails", func(t *testing.T) {
+		if err := registered(t, "198.51.100.1").checkHostAlias(hostAlias, hostAliasIP); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("registered without --localhost fails", func(t *testing.T) {
+		if err := registered(t, "").checkHostAlias(hostAlias, hostAliasIP); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("unreadable resolver fails", func(t *testing.T) {
+		a := appleRuntime{resolverPrefix: t.TempDir() + "/"}
+		if err := os.Mkdir(a.resolverPrefix+hostAlias, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.checkHostAlias(hostAlias, hostAliasIP); err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})
 }
 
-func TestValidateShortCircuitsOnImageFailure(t *testing.T) {
-	// A probe whose DNS call would fail must not even be consulted when the
-	// image check fails first: validates Validate's ordering.
-	dnsBoom := errors.New("dns boom")
-	m := NewContainerManager(&fakeProbe{
-		images:    "nothing\n",
-		imagesErr: nil,
-		dnsErr:    dnsBoom,
-	})
-	err := m.Validate("")
-	if errors.Is(err, dnsBoom) {
-		t.Fatalf("err = %v, validateImage's failure should short-circuit before validateDNS runs", err)
-	}
-	if err == nil {
-		t.Fatal("expected error, got nil")
+func TestAppleRuntimeRunArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		c    container
+		want []string
+	}{{
+		name: "minimal container without a terminal",
+		c:    container{image: imageRef},
+		want: []string{"run", "--rm", "-i", imageRef},
+	}, {
+		name: "every field",
+		c: container{
+			image:    imageRef,
+			network:  hostOnlyNetwork,
+			caps:     []string{"NET_ADMIN"},
+			env:      []string{"A=1"},
+			envFiles: []string{"/secrets.env"},
+			mounts:   []mount{{"/src", "/workspace"}, {"/cfg", "/home/agent/.pi"}},
+			memory:   "4g",
+			tty:      true,
+			command:  []string{"pi", "--model", "m"},
+		},
+		want: []string{
+			"run", "--rm", "-it",
+			"-v", "/src:/workspace", "-v", "/cfg:/home/agent/.pi",
+			"--network", hostOnlyNetwork,
+			"--cap-add", "NET_ADMIN",
+			"--env", "A=1",
+			"--env-file", "/secrets.env",
+			"--memory", "4g",
+			imageRef, "pi", "--model", "m",
+		},
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (appleRuntime{}).runArgs(tt.c); !slices.Equal(got, tt.want) {
+				t.Fatalf("runArgs() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
-
-// Note: appleContainer, the only exec-based piece, is deliberately absent from
-// these tests. Its contract is "ask the real CLI"; unit-testing it against a
-// fake would only re-test the fake. It is covered by the real CLI at run
-// time (and, if desired later, by an explicitly-labeled integration test).

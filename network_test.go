@@ -1,7 +1,7 @@
 package main
 
 import (
-	"slices"
+	"reflect"
 	"strconv"
 	"testing"
 )
@@ -32,26 +32,36 @@ func TestNetworkDefaultsToOllama(t *testing.T) {
 	}
 }
 
-func TestNetworkModeRunArgs(t *testing.T) {
+func TestNetworkModeApply(t *testing.T) {
+	base := container{hostAlias: hostAlias, hostAliasIP: hostAliasIP}
 	egress := "ISOLATE_EGRESS=" + hostAlias + "=" + hostAliasIP + ":" + strconv.Itoa(ollamaPort)
 
 	tests := []struct {
 		mode networkMode
-		want []string
+		want container
 	}{{
 		mode: networkOpen,
+		want: base,
 	}, {
 		mode: networkHost,
-		want: []string{"--network", hostOnlyNetwork},
+		want: container{hostAlias: hostAlias, hostAliasIP: hostAliasIP, network: hostOnlyNetwork},
 	}, {
 		mode: networkOllama,
-		want: []string{"--network", hostOnlyNetwork, "--cap-add", "NET_ADMIN", "--env", egress},
+		want: container{
+			hostAlias:   hostAlias,
+			hostAliasIP: hostAliasIP,
+			network:     hostOnlyNetwork,
+			caps:        []string{"NET_ADMIN"},
+			env:         []string{egress},
+		},
 	}}
 
 	for _, tt := range tests {
 		t.Run(tt.mode.String(), func(t *testing.T) {
-			if got := tt.mode.runArgs(); !slices.Equal(got, tt.want) {
-				t.Fatalf("runArgs() = %v, want %v", got, tt.want)
+			got := base
+			tt.mode.apply(&got)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("apply() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
