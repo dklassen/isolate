@@ -24,117 +24,116 @@ const (
 	imageRef = "isolate-agents:" + version
 )
 
-// containerProbe is the boundary around everything these checks need from the
-// external container CLI: asking what images exist and what DNS aliases are
-// registered. Because the policy in containerManager is written against this
-// interface rather than against process exec, production and tests differ
-// only in what reports them: appleContainer (Apple's container CLI) shells
-// out, fakeProbe returns canned data. Neither side depends on the other
-// side's mechanism (binary on PATH, shell, exit codes, output quirks).
-type containerProbe interface {
-	// imageRefs returns the verbatim lines of `container image list -q`
-	// (one ref per line; whether tags are included is the CLI's, not ours).
-	imageRefs() (string, error)
-	// dnsResolver returns the verbatim resolver file `container system dns
-	// create` wrote for domain, or an error wrapping fs.ErrNotExist if the
-	// domain isn't registered.
-	dnsResolver(domain string) (string, error)
-	// networkNames returns the verbatim output of `container network list -q`.
-	networkNames() (string, error)
-}
-
-// appleContainer is the production containerProbe: named for what it
-// represents — Apple's container CLI — and the single place in the program
-// that knows how to drive it. Its correctness depends on that external tool
-// (argument form, exit status, output shape), so it is an integration
-// surface, deliberately untested at the unit level: there is no pure
-// behavior in it to assert, and a unit-test fake would only re-test the
-// fake. Its real behavior is the real CLI at run time.
-type appleContainer struct {
-	bin string
-}
-
-func (a appleContainer) imageRefs() (string, error) {
-	out, err := exec.Command(a.bin, "image", "list", "-q").Output()
-	return string(out), err
-}
-
-func (a appleContainer) dnsResolver(domain string) (string, error) {
-	out, err := os.ReadFile(dnsResolverPrefix + domain)
-	return string(out), err
-}
-
-func (a appleContainer) networkNames() (string, error) {
-	out, err := exec.Command(a.bin, "network", "list", "-q").Output()
-	return string(out), err
-}
-
-// containerManager holds the readiness policy: a host's container
-// installation is ready to run against iff the required image exists and the
-// host alias is DNS-registered so a container can reach the host. It consumes
-// its probe through the containerProbe interface and never sees a concrete
-// probe type or a binary path: any implementation of the port (appleContainer
-// in production, fakeProbe in tests) is drop-in.
-type containerManager struct {
-	probe       containerProbe
-	imageRef    string
+// container describes one isolate run: what a containerRuntime checks, then
+// runs.
+type container struct {
+	image string
+	// network is "" for the runtime's default network.
+	network string
+	// hostAlias is the name the container reaches the host by, registered to
+	// resolve to hostAliasIP.
 	hostAlias   string
 	hostAliasIP string
+	caps        []string
+	env         []string // KEY=VALUE
+	envFiles    []string
+	mounts      []mount
+	memory      string // "" for no limit
+	tty         bool
+	command     []string // arguments to the image's entrypoint
 }
 
-// NewContainerManager builds a manager around probe — any containerProbe,
-// e.g. appleContainer{bin: ...} — wiring in the package's canonical imageRef
-// and hostAlias to check against.
-func NewContainerManager(probe containerProbe) *containerManager {
-	return &containerManager{
-		probe:       probe,
-		imageRef:    imageRef,
-		hostAlias:   hostAlias,
-		hostAliasIP: hostAliasIP,
-	}
+// mount binds the host path host into the container at target.
+type mount struct {
+	host, target string
 }
 
-// Validate executes the full readiness check against m.probe. network is the
-// container network the run attaches to, or "" for the default one.
-func (m *containerManager) Validate(network string) error {
-	if err := m.validateImage(); err != nil {
+// containerRuntime runs containers on some container system.
+type containerRuntime interface {
+	// Check returns an actionable error if c can't run here.
+	Check(c container) error
+	// Run runs c on isolate's stdio until it exits.
+	Run(c container) error
+}
+
+// appleRuntime is the containerRuntime for Apple's container CLI.
+type appleRuntime struct {
+	bin            string
+	resolverPrefix string
+}
+
+func newAppleRuntime(bin string) appleRuntime {
+	return appleRuntime{bin: bin, resolverPrefix: dnsResolverPrefix}
+}
+
+func (r appleRuntime) Check(c container) error {
+	if err := r.checkImage(c.image); err != nil {
 		return err
 	}
-	if err := m.validateDNS(); err != nil {
-		return err
-	}
-	if network == "" {
-		return nil
-	}
-	return m.validateNetwork(network)
-}
-
-func (m *containerManager) validateNetwork(network string) error {
-	list, err := m.probe.networkNames()
-	if err != nil {
-		return fmt.Errorf("container network list: %w", err)
-	}
-	for line := range strings.SplitSeq(list, "\n") {
-		if strings.TrimSpace(line) == network {
-			return nil
+	if c.hostAlias != "" {
+		if err := r.checkHostAlias(c.hostAlias, c.hostAliasIP); err != nil {
+			return err
 		}
 	}
-	return fmt.Errorf("container network %q not found; create it once with: go tool task system:network", network)
+	if c.network != "" {
+		return r.checkNetwork(c.network)
+	}
+	return nil
 }
 
-func (m *containerManager) validateImage() error {
-	list, err := m.probe.imageRefs()
+func (r appleRuntime) Run(c container) error {
+	//nolint:gosec // bin is resolved via exec.LookPath; running it is this tool's entire purpose
+	cmd := exec.Command(r.bin, r.runArgs(c)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runArgs returns the `container run` arguments for c.
+func (r appleRuntime) runArgs(c container) []string {
+	args := []string{"run", "--rm"}
+	// -t demands a terminal attached to stdin; scripts and CI don't have one.
+	if c.tty {
+		args = append(args, "-it")
+	} else {
+		args = append(args, "-i")
+	}
+	for _, m := range c.mounts {
+		args = append(args, "-v", m.host+":"+m.target)
+	}
+	if c.network != "" {
+		args = append(args, "--network", c.network)
+	}
+	for _, cp := range c.caps {
+		args = append(args, "--cap-add", cp)
+	}
+	for _, e := range c.env {
+		args = append(args, "--env", e)
+	}
+	for _, f := range c.envFiles {
+		args = append(args, "--env-file", f)
+	}
+	if c.memory != "" {
+		args = append(args, "--memory", c.memory)
+	}
+	args = append(args, c.image)
+	return append(args, c.command...)
+}
+
+func (r appleRuntime) checkImage(ref string) error {
+	out, err := exec.Command(r.bin, "image", "list", "-q").Output()
 	if err != nil {
 		return fmt.Errorf("container image list: %w", err)
 	}
-	if imageListContains(list, m.imageRef) {
+	if imageListContains(string(out), ref) {
 		return nil
 	}
-	return fmt.Errorf("image %q not found; build it first with: go tool task images:build", m.imageRef)
+	return fmt.Errorf("image %q not found; build it first with: go tool task images:build", ref)
 }
 
-func (m *containerManager) validateDNS() error {
-	resolver, err := m.probe.dnsResolver(m.hostAlias)
+func (r appleRuntime) checkHostAlias(alias, ip string) error {
+	resolver, err := os.ReadFile(r.resolverPrefix + alias)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf(
 			"DNS domain %q is not registered with 'container'.\n"+
@@ -142,23 +141,34 @@ func (m *containerManager) validateDNS() error {
 				"any reboot since the packet filter rule doesn't survive a restart:\n\n"+
 				"    go tool task system:dns    (from the isolate repo)\n"+
 				"    sudo container system dns create %s --localhost %s",
-			m.hostAlias, m.hostAlias, m.hostAliasIP,
+			alias, alias, ip,
 		)
 	}
 	if err != nil {
-		return fmt.Errorf("reading DNS domain %q: %w", m.hostAlias, err)
+		return fmt.Errorf("reading DNS domain %q: %w", alias, err)
 	}
-	// The firewall allows only hostAliasIP, so an alias registered with any
-	// other address would leave the host unreachable.
-	if got := resolverLocalhost(resolver); got != m.hostAliasIP {
+	// The firewall allows only ip, so an alias registered with any other
+	// address would leave the host unreachable.
+	if got := resolverLocalhost(string(resolver)); got != ip {
 		return fmt.Errorf(
 			"DNS domain %q is registered with --localhost %q, want %q. Re-register it:\n\n"+
 				"    sudo container system dns delete %s\n"+
 				"    go tool task system:dns    (from the isolate repo)",
-			m.hostAlias, got, m.hostAliasIP, m.hostAlias,
+			alias, got, ip, alias,
 		)
 	}
 	return nil
+}
+
+func (r appleRuntime) checkNetwork(network string) error {
+	out, err := exec.Command(r.bin, "network", "list", "-q").Output()
+	if err != nil {
+		return fmt.Errorf("container network list: %w", err)
+	}
+	if networkListContains(string(out), network) {
+		return nil
+	}
+	return fmt.Errorf("container network %q not found; create it once with: go tool task system:network", network)
 }
 
 // resolverLocalhost returns the address from the "options localhost:<ip>"
@@ -178,16 +188,26 @@ func resolverLocalhost(resolver string) string {
 	return ""
 }
 
+// networkListContains reports whether `container network list -q` output
+// (one name per line) includes network.
+func networkListContains(list, network string) bool {
+	for line := range strings.SplitSeq(list, "\n") {
+		if strings.TrimSpace(line) == network {
+			return true
+		}
+	}
+	return false
+}
+
 // imageListContains reports whether image-list output (one ref per line)
-// includes ref. Pure over its input, so it is testable with no process or
-// binary involved.
+// includes ref.
 //
 // It matches the full "name:tag" reference exactly, falling back to an exact
 // bare-name match only for output that omits tags entirely, where there is
 // nothing finer to match on. A looser prefix/name-only comparison would let a
 // stale isolate-agents:0.0.1 (or any unrelated isolate-agents-* image)
 // satisfy a run that needs a different tag, trading the actionable error in
-// validateImage for an opaque `container run` failure.
+// checkImage for an opaque `container run` failure.
 func imageListContains(list, ref string) bool {
 	name, _, _ := strings.Cut(ref, ":")
 	for line := range strings.SplitSeq(list, "\n") {

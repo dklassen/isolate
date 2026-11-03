@@ -13,8 +13,8 @@ type buildMountsCase struct {
 	config     string
 	configFile string
 	sessions   string
-	want       []string // expected "-v..." args when the mount succeeds
-	wantErrSub string   // expected error substring when the mount must fail
+	want       []mount // expected mounts when the mount succeeds
+	wantErrSub string  // expected error substring when the mount must fail
 }
 
 func TestBuildMounts(t *testing.T) {
@@ -40,9 +40,9 @@ func TestBuildMounts(t *testing.T) {
 			agent:    pi,
 			config:   dir,
 			sessions: filepath.Join(dir, "sessions"),
-			want: []string{
-				"-v", dir + ":" + pi.ConfigDir,
-				"-v", filepath.Join(dir, "sessions") + ":" + pi.SessionsDir,
+			want: []mount{
+				{dir, pi.ConfigDir},
+				{filepath.Join(dir, "sessions"), pi.SessionsDir},
 			},
 		},
 	}, {
@@ -65,9 +65,9 @@ func TestBuildMounts(t *testing.T) {
 			agent:      claude,
 			config:     dir,
 			configFile: existingFile,
-			want: []string{
-				"-v", dir + ":" + claude.ConfigDir,
-				"-v", existingFile + ":" + claude.ConfigFile,
+			want: []mount{
+				{dir, claude.ConfigDir},
+				{existingFile, claude.ConfigFile},
 			},
 		},
 	}, {
@@ -144,7 +144,7 @@ func TestBuildMounts(t *testing.T) {
 			}
 			for i := range tt.build.want {
 				if mounts[i] != tt.build.want[i] {
-					t.Fatalf("mounts[%d] = %q, want %q", i, mounts[i], tt.build.want[i])
+					t.Fatalf("mounts[%d] = %+v, want %+v", i, mounts[i], tt.build.want[i])
 				}
 			}
 		})
