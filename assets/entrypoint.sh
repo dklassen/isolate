@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 
+# $1 is iptables or ip6tables. The limit stops a retry loop flooding the log.
+log_dropped() {
+  $log_drops || return 0
+  if ! "$1" -A OUTPUT -m limit --limit 10/s --limit-burst 20 -j NFLOG --nflog-group 1 --nflog-prefix "$1-drop"; then
+    echo "entrypoint.sh: warning: cannot add the $1 NFLOG rule; dropped packets won't be logged" >&2
+  fi
+}
+
 agent="${1:?usage: entrypoint.sh <agent> [args...]}"
 shift
 
@@ -9,19 +17,18 @@ shift
 # firewall or /etc/hosts, or regain root through a setuid binary.
 as_agent="setpriv --reuid=agent --regid=agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs --"
 
-# ISOLATE_EGRESS=host=ip:port (--network ollama in network.go) allows outbound
-# traffic to that one address only. Any failure here aborts the run rather
-# than starting unrestricted.
-if [ -n "${ISOLATE_EGRESS:-}" ]; then
-  case "$ISOLATE_EGRESS" in
+# lock_egress host=ip:port allows outbound traffic to that one address only.
+# Any failure aborts the run rather than starting unrestricted.
+lock_egress() {
+  case "$1" in
   ?*=?*:?*) ;;
   *)
-    echo "entrypoint.sh: error: ISOLATE_EGRESS=$ISOLATE_EGRESS is not host=ip:port; refusing to start without the egress firewall" >&2
+    echo "entrypoint.sh: error: ISOLATE_EGRESS=$1 is not host=ip:port; refusing to start without the egress firewall" >&2
     exit 1
     ;;
   esac
-  egress_host="${ISOLATE_EGRESS%%=*}"
-  egress_addr="${ISOLATE_EGRESS#*=}"
+  egress_host="${1%%=*}"
+  egress_addr="${1#*=}"
   egress_ip="${egress_addr%:*}"
   egress_port="${egress_addr##*:}"
 
@@ -37,13 +44,6 @@ if [ -n "${ISOLATE_EGRESS:-}" ]; then
     echo "entrypoint.sh: warning: ulogd failed to start (see the logfile in /etc/ulogd.conf); dropped packets won't be logged" >&2
     log_drops=false
   fi
-  # $1 is iptables or ip6tables. The limit stops a retry loop flooding the log.
-  log_dropped() {
-    $log_drops || return 0
-    if ! "$1" -A OUTPUT -m limit --limit 10/s --limit-burst 20 -j NFLOG --nflog-group 1 --nflog-prefix "$1-drop"; then
-      echo "entrypoint.sh: warning: cannot add the $1 NFLOG rule; dropped packets won't be logged" >&2
-    fi
-  }
 
   iptables -F OUTPUT
   iptables -A OUTPUT -o lo -j ACCEPT
@@ -57,6 +57,11 @@ if [ -n "${ISOLATE_EGRESS:-}" ]; then
     ip6tables -P OUTPUT DROP
   fi
   echo "entrypoint.sh: network locked to $egress_host ($egress_ip):$egress_port"
+}
+
+# ISOLATE_EGRESS is set by --network ollama (network.go).
+if [ -n "${ISOLATE_EGRESS:-}" ]; then
+  lock_egress "$ISOLATE_EGRESS"
 fi
 
 # container creates missing parents of mount points (e.g. ~/.pi/agent under
