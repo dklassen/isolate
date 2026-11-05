@@ -4,7 +4,8 @@ package main
 
 import (
 	"fmt"
-	"os"
+
+	"github.com/spf13/cobra"
 )
 
 // version is the single source of the tool's version; `isolate version`
@@ -12,26 +13,25 @@ import (
 const version = "0.1.0"
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+	root := &cobra.Command{
+		Use:           "isolate",
+		Short:         "Run an AI coding agent in a container whose only writable host path is the one folder it is given",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
-
-	switch os.Args[1] {
-	case "run":
-		runCmd(os.Args[2:])
-	case "generate":
-		generateCmd(os.Args[2:])
-	case "version":
-		fmt.Println("isolate " + version)
-	case "-h", "--help", "help":
-		usage()
-	default:
-		usage()
-		os.Exit(1)
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w (see '%s --help'; use '--' to pass arguments through to the agent)", err, cmd.CommandPath())
+	})
+	root.AddCommand(newRunCmd(), newGenerateCmd(), &cobra.Command{
+		Use:   "version",
+		Short: "Print the isolate version",
+		Args:  cobra.NoArgs,
+		Run:   func(*cobra.Command, []string) { fmt.Println("isolate " + version) },
+	})
+	if cmd, err := root.ExecuteC(); err != nil {
+		if cmd != root {
+			err = fmt.Errorf("%s: %w", cmd.Name(), err)
+		}
+		fatalf("%v", err)
 	}
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: isolate run <folder> [--profile <file>] [--agent pi|claude] [--model <model>] [--network ollama|host|open] [--config <path>] [--config-file <path>] [--sessions <path>] [--memory <size>] [--secrets-file <path>] [-- <agent args>...]")
 }

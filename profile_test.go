@@ -31,7 +31,7 @@ func TestProfileFillsUnsetFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadProfile: %v", err)
 	}
-	rf := newRunFlags()
+	rf := testRunFlags()
 	if err := rf.fs.Parse(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestCommandLineOverridesProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadProfile: %v", err)
 	}
-	rf := newRunFlags()
+	rf := testRunFlags()
 	if err := rf.fs.Parse([]string{"--network", networkOpen.String(), "--secrets-file", "cli.env"}); err != nil {
 		t.Fatal(err)
 	}

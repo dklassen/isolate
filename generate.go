@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"text/template"
+
+	"github.com/spf13/cobra"
 )
 
 // ulogdConfPath is relative to the repo root, where go generate and the
@@ -31,14 +33,18 @@ func renderUlogdConf() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// generateCmd writes the files the image build copies in that derive from
-// Go constants. Not in usage(): it's a build step, not a user command.
-func generateCmd(args []string) {
-	if len(args) != 0 {
-		fatalf("generate takes no arguments")
+func newGenerateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "generate",
+		Short: "Write the image-build files derived from Go constants",
+		// A build step, not a user command.
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		Run: func(*cobra.Command, []string) {
+			conf, err := renderUlogdConf()
+			must(err)
+			//nolint:gosec // checked-in config the image copies; must stay world-readable
+			must(os.WriteFile(ulogdConfPath, conf, 0o644))
+		},
 	}
-	conf, err := renderUlogdConf()
-	must(err)
-	//nolint:gosec // checked-in config the image copies; must stay world-readable
-	must(os.WriteFile(ulogdConfPath, conf, 0o644))
 }

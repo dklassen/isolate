@@ -3,10 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/spf13/pflag"
 )
 
 // profile is a saved `isolate run` setup, loaded with --profile. Each field
@@ -58,9 +59,9 @@ func loadProfile(path string) (*profile, error) {
 
 // apply sets each of p's non-empty fields on fs, skipping flags already set
 // on the command line.
-func (p *profile) apply(fs *flag.FlagSet) error {
+func (p *profile) apply(fs *pflag.FlagSet) error {
 	set := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	fs.Visit(func(f *pflag.Flag) { set[f.Name] = true })
 
 	values := []struct {
 		flag   string

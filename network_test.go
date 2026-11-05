@@ -23,7 +23,7 @@ func TestParseNetworkModeRoundTrips(t *testing.T) {
 }
 
 func TestNetworkDefaultsToOllama(t *testing.T) {
-	rf := newRunFlags()
+	rf := testRunFlags()
 	if err := rf.fs.Parse(nil); err != nil {
 		t.Fatal(err)
 	}
