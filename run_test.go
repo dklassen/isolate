@@ -461,3 +461,32 @@ func TestSplitFlagsRecognizesRegisteredFlags(t *testing.T) {
 		}
 	})
 }
+
+func TestSplitFlagsPositionalNamedLikeAFlag(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantFlags []string
+	}{{
+		name: "alone",
+		args: []string{"agent"},
+	}, {
+		name:      "followed by flags",
+		args:      []string{"model", "--agent", "pi"},
+		wantFlags: []string{"--agent", "pi"},
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flagArgs, positional, _, err := splitFlags(testFlagSet(), tt.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(positional) != 1 || positional[0] != tt.args[0] {
+				t.Fatalf("positional = %v, want [%s]", positional, tt.args[0])
+			}
+			if !slices.Equal(flagArgs, tt.wantFlags) {
+				t.Fatalf("flagArgs = %v, want %v", flagArgs, tt.wantFlags)
+			}
+		})
+	}
+}

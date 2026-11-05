@@ -158,6 +158,9 @@ func parseFlag(fs *flag.FlagSet, args []string) (flagArgs []string, consumed int
 		return []string{name, val}, 1, nil
 	}
 
+	if !isFlag(a) {
+		return nil, 0, nil
+	}
 	takesValue, known := lookupFlag(fs, a)
 	switch {
 	case known && !takesValue:
@@ -171,10 +174,8 @@ func parseFlag(fs *flag.FlagSet, args []string) (flagArgs []string, consumed int
 			return nil, 0, fmt.Errorf("flag %q %w", a, errFlagNeedsValue)
 		}
 		return []string{a, args[1]}, 2, nil
-	case isFlag(a):
-		return nil, 0, unknownFlag(a)
 	}
-	return nil, 0, nil
+	return nil, 0, unknownFlag(a)
 }
 
 func unknownFlag(name string) error {
