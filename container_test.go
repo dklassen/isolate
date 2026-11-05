@@ -108,6 +108,7 @@ func TestCheckHostAlias(t *testing.T) {
 	// registered writes the resolver file `container system dns create`
 	// would for hostAlias into a fresh resolver directory.
 	registered := func(t *testing.T, ip string) appleRuntime {
+		t.Helper()
 		a := appleRuntime{resolverPrefix: t.TempDir() + "/"}
 		if err := os.WriteFile(a.resolverPrefix+hostAlias, []byte(resolverFile(hostAlias, ip)), 0o600); err != nil {
 			t.Fatal(err)

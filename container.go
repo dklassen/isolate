@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,6 +23,12 @@ const (
 	// place; the Taskfile's IMAGE_REF still needs to be kept in sync (its
 	// comment tracks this).
 	imageRef = "isolate-agents:" + version
+)
+
+var (
+	errNotFound         = errors.New("not found")
+	errNotRegistered    = errors.New("not registered")
+	errWrongHostAliasIP = errors.New("has the wrong address")
 )
 
 // container describes one isolate run: what a containerRuntime checks, then
@@ -51,9 +58,9 @@ type mount struct {
 // containerRuntime runs containers on some container system.
 type containerRuntime interface {
 	// Check returns an actionable error if c can't run here.
-	Check(c container) error
+	Check(ctx context.Context, c container) error
 	// Run runs c on isolate's stdio until it exits.
-	Run(c container) error
+	Run(ctx context.Context, c container) error
 }
 
 // appleRuntime is the containerRuntime for Apple's container CLI.
@@ -66,8 +73,8 @@ func newAppleRuntime(bin string) appleRuntime {
 	return appleRuntime{bin: bin, resolverPrefix: dnsResolverPrefix}
 }
 
-func (r appleRuntime) Check(c container) error {
-	if err := r.checkImage(c.image); err != nil {
+func (r appleRuntime) Check(ctx context.Context, c container) error {
+	if err := r.checkImage(ctx, c.image); err != nil {
 		return err
 	}
 	if c.hostAlias != "" {
@@ -76,18 +83,20 @@ func (r appleRuntime) Check(c container) error {
 		}
 	}
 	if c.network != "" {
-		return r.checkNetwork(c.network)
+		return r.checkNetwork(ctx, c.network)
 	}
 	return nil
 }
 
-func (r appleRuntime) Run(c container) error {
-	//nolint:gosec // bin is resolved via exec.LookPath; running it is this tool's entire purpose
-	cmd := exec.Command(r.bin, r.runArgs(c)...)
+func (r appleRuntime) Run(ctx context.Context, c container) error {
+	cmd := exec.CommandContext(ctx, r.bin, r.runArgs(c)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("container run: %w", err)
+	}
+	return nil
 }
 
 // runArgs returns the `container run` arguments for c.
@@ -121,27 +130,27 @@ func (r appleRuntime) runArgs(c container) []string {
 	return append(args, c.command...)
 }
 
-func (r appleRuntime) checkImage(ref string) error {
-	out, err := exec.Command(r.bin, "image", "list", "-q").Output()
+func (r appleRuntime) checkImage(ctx context.Context, ref string) error {
+	out, err := exec.CommandContext(ctx, r.bin, "image", "list", "-q").Output()
 	if err != nil {
 		return fmt.Errorf("container image list: %w", err)
 	}
 	if imageListContains(string(out), ref) {
 		return nil
 	}
-	return fmt.Errorf("image %q not found; build it first with: go tool task images:build", ref)
+	return fmt.Errorf("image %q %w; build it first with: go tool task images:build", ref, errNotFound)
 }
 
 func (r appleRuntime) checkHostAlias(alias, ip string) error {
 	resolver, err := os.ReadFile(r.resolverPrefix + alias)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf(
-			"DNS domain %q is not registered with 'container'.\n"+
+			"DNS domain %q is %w with 'container'.\n"+
 				"This is needed so containers can reach the host. Run once, and again after\n"+
 				"any reboot since the packet filter rule doesn't survive a restart:\n\n"+
 				"    go tool task system:dns    (from the isolate repo)\n"+
 				"    sudo container system dns create %s --localhost %s",
-			alias, alias, ip,
+			alias, errNotRegistered, alias, ip,
 		)
 	}
 	if err != nil {
@@ -151,24 +160,24 @@ func (r appleRuntime) checkHostAlias(alias, ip string) error {
 	// address would leave the host unreachable.
 	if got := resolverLocalhost(string(resolver)); got != ip {
 		return fmt.Errorf(
-			"DNS domain %q is registered with --localhost %q, want %q. Re-register it:\n\n"+
+			"DNS domain %q %w: registered with --localhost %q, want %q. Re-register it:\n\n"+
 				"    sudo container system dns delete %s\n"+
 				"    go tool task system:dns    (from the isolate repo)",
-			alias, got, ip, alias,
+			alias, errWrongHostAliasIP, got, ip, alias,
 		)
 	}
 	return nil
 }
 
-func (r appleRuntime) checkNetwork(network string) error {
-	out, err := exec.Command(r.bin, "network", "list", "-q").Output()
+func (r appleRuntime) checkNetwork(ctx context.Context, network string) error {
+	out, err := exec.CommandContext(ctx, r.bin, "network", "list", "-q").Output()
 	if err != nil {
 		return fmt.Errorf("container network list: %w", err)
 	}
 	if networkListContains(string(out), network) {
 		return nil
 	}
-	return fmt.Errorf("container network %q not found; create it once with: go tool task system:network", network)
+	return fmt.Errorf("container network %q %w; create it once with: go tool task system:network", network, errNotFound)
 }
 
 // resolverLocalhost returns the address from the "options localhost:<ip>"

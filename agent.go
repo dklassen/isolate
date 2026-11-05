@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 )
+
+var errUnknownAgent = errors.New("unknown agent")
 
 // Agent describes a coding agent that can run inside the container: its
 // exec name (also the dispatch key entrypoint.sh uses to choose a binary)
@@ -45,7 +48,7 @@ func lookupAgent(name string) (*Agent, error) {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		return nil, fmt.Errorf("unknown agent %q (known: %s)", name, strings.Join(names, ", "))
+		return nil, fmt.Errorf("%w %q (known: %s)", errUnknownAgent, name, strings.Join(names, ", "))
 	}
 	return agent, nil
 }

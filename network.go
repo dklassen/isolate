@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,6 +16,8 @@ const (
 	// `isolate generate`.
 	firewallLogDir = "/var/log/isolate"
 )
+
+var errUnknownNetworkMode = errors.New("unknown network mode")
 
 // networkMode is what the container may reach over the network.
 type networkMode int
@@ -43,7 +46,7 @@ func parseNetworkMode(s string) (networkMode, error) {
 			return networkMode(m), nil
 		}
 	}
-	return 0, fmt.Errorf("unknown network mode %q (known: %s)", s, strings.Join(networkModeNames[:], ", "))
+	return 0, fmt.Errorf("%w %q (known: %s)", errUnknownNetworkMode, s, strings.Join(networkModeNames[:], ", "))
 }
 
 // apply puts c in mode m.

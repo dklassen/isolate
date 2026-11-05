@@ -1,3 +1,5 @@
+// Command isolate runs an AI coding agent in a container whose only writable
+// host path is the one folder it is given.
 package main
 
 import (

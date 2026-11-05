@@ -177,20 +177,22 @@ tasks:
           done
         '
 
+  # `.` rather than `./...`: claude writes scratch .go files under the
+  # gitignored assets/agents/claude/config/home, which `./...` would load.
   test:
     desc: Run the test suite
     silent: true
-    cmd: go test ./... -cover
+    cmd: go test -cover .
 
   fmt:
-    desc: Format the codebase
+    desc: Format the codebase with the formatters golangci-lint enforces
     silent: true
-    cmd: gofmt -l -w .
+    cmd: go tool golangci-lint fmt .
 
   lint:
     desc: Run golangci-lint on the codebase
     silent: true
-    cmd: go tool golangci-lint run ./...
+    cmd: go tool golangci-lint run .
 
   system:check:
     desc: Check apple container system status; start it if it's down

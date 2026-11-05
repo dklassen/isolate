@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +18,7 @@ type buildMountsCase struct {
 	configFile string
 	sessions   string
 	want       []mount // expected mounts when the mount succeeds
-	wantErrSub string  // expected error substring when the mount must fail
+	wantErr    error
 }
 
 func TestBuildMounts(t *testing.T) {
@@ -51,14 +54,14 @@ func TestBuildMounts(t *testing.T) {
 		build: buildMountsCase{
 			agent:      pi,
 			configFile: existingFile,
-			wantErrSub: "not supported",
+			wantErr:    errUnsupportedFlag,
 		},
 	}, {
 		name: "claude rejects sessions",
 		build: buildMountsCase{
-			agent:      claude,
-			sessions:   dir,
-			wantErrSub: "not supported",
+			agent:    claude,
+			sessions: dir,
+			wantErr:  errUnsupportedFlag,
 		},
 	}, {
 		name: "claude config and config-file mount",
@@ -76,21 +79,21 @@ func TestBuildMounts(t *testing.T) {
 		build: buildMountsCase{
 			agent:      claude,
 			configFile: filepath.Join(dir, "missing.json"),
-			wantErrSub: "no such file",
+			wantErr:    iofs.ErrNotExist,
 		},
 	}, {
 		name: "config directory must exist",
 		build: buildMountsCase{
-			agent:      pi,
-			config:     filepath.Join(dir, "typo"),
-			wantErrSub: "no such file",
+			agent:   pi,
+			config:  filepath.Join(dir, "typo"),
+			wantErr: iofs.ErrNotExist,
 		},
 	}, {
 		name: "config pointing at a file is rejected",
 		build: buildMountsCase{
-			agent:      pi,
-			config:     notADir,
-			wantErrSub: "not a directory",
+			agent:   pi,
+			config:  notADir,
+			wantErr: errNotDir,
 		},
 	}}
 
@@ -105,9 +108,9 @@ func TestBuildMounts(t *testing.T) {
 		}{
 			name: "colon in config path is rejected",
 			build: buildMountsCase{
-				agent:      pi,
-				config:     colonDir,
-				wantErrSub: "must not contain",
+				agent:   pi,
+				config:  colonDir,
+				wantErr: errBadMountPath,
 			},
 		})
 	}
@@ -118,9 +121,9 @@ func TestBuildMounts(t *testing.T) {
 		}{
 			name: "colon in sessions path is rejected",
 			build: buildMountsCase{
-				agent:      pi,
-				sessions:   colonSes,
-				wantErrSub: "must not contain",
+				agent:    pi,
+				sessions: colonSes,
+				wantErr:  errBadMountPath,
 			},
 		})
 	}
@@ -128,78 +131,41 @@ func TestBuildMounts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mounts, err := buildMounts(tt.build.agent, tt.build.config, tt.build.configFile, tt.build.sessions)
-			if tt.build.wantErrSub != "" {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if !strings.Contains(err.Error(), tt.build.wantErrSub) {
-					t.Fatalf("err = %v, want containing %q", err, tt.build.wantErrSub)
-				}
-				return
+			if !errors.Is(err, tt.build.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.build.wantErr)
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(mounts) != len(tt.build.want) {
-				t.Fatalf("mounts = %v, want %v", mounts, tt.build.want)
-			}
-			for i := range tt.build.want {
-				if mounts[i] != tt.build.want[i] {
-					t.Fatalf("mounts[%d] = %+v, want %+v", i, mounts[i], tt.build.want[i])
-				}
+			if !slices.Equal(mounts, tt.build.want) {
+				t.Fatalf("mounts = %+v, want %+v", mounts, tt.build.want)
 			}
 		})
 	}
 }
 
 func TestLookupAgent(t *testing.T) {
-	tests := []struct {
-		agent   string
-		known   bool
-		wantSub string // error substring (implies !known)
-	}{{
-		agent: "pi",
-		known: true,
-	}, {
-		agent: "claude",
-		known: true,
-	}, {
-		agent:   "bogus",
-		known:   false,
-		wantSub: "unknown agent",
-	}}
-
-	for _, tt := range tests {
-		t.Run(tt.agent, func(t *testing.T) {
-			agent, err := lookupAgent(tt.agent)
-			if !tt.known {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if !strings.Contains(err.Error(), tt.wantSub) {
-					t.Fatalf("err = %v, want containing %q", err, tt.wantSub)
-				}
-				return
-			}
+	for name := range agents {
+		t.Run(name, func(t *testing.T) {
+			agent, err := lookupAgent(name)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if agent.Name != tt.agent {
-				t.Fatalf("agent.Name = %q, want %q", agent.Name, tt.agent)
+			if agent.Name != name {
+				t.Fatalf("agent.Name = %q, want %q", agent.Name, name)
 			}
 		})
 	}
+}
 
+func TestLookupAgentUnknown(t *testing.T) {
+	_, err := lookupAgent("bogus")
+	if !errors.Is(err, errUnknownAgent) {
+		t.Fatalf("err = %v, want %v", err, errUnknownAgent)
+	}
 	// The known list must be derived from the registry, not hardcoded: any
 	// agent in agents[] has to appear in the failure message for the hint to
 	// stay true.
-	if _, err := lookupAgent("bogus"); err == nil {
-		t.Fatal("lookupAgent(bogus): expected error, got nil")
-	} else {
-		for name := range agents {
-			if !strings.Contains(err.Error(), name) {
-				t.Fatalf("lookupAgent(bogus) error %q does not mention registered agent %q", err.Error(), name)
-			}
+	for name := range agents {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("lookupAgent(bogus) error %q does not mention registered agent %q", err.Error(), name)
 		}
 	}
 }
