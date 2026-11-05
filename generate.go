@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"fmt"
 	"os"
 	"text/template"
 )
@@ -21,11 +22,11 @@ var ulogdConfTemplate string
 func renderUlogdConf() ([]byte, error) {
 	t, err := template.New("ulogd.conf").Option("missingkey=error").Parse(ulogdConfTemplate)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse ulogd.conf template: %w", err)
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, struct{ LogDir string }{firewallLogDir}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("render ulogd.conf: %w", err)
 	}
 	return buf.Bytes(), nil
 }
@@ -38,5 +39,6 @@ func generateCmd(args []string) {
 	}
 	conf, err := renderUlogdConf()
 	must(err)
+	//nolint:gosec // checked-in config the image copies; must stay world-readable
 	must(os.WriteFile(ulogdConfPath, conf, 0o644))
 }

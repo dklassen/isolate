@@ -1,0 +1,29 @@
+name: CI
+
+on: push
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: go.mod is tidy
+        run: go mod tidy -diff
+      - name: Generated files are current
+        run: go run . generate && git diff --exit-code
+      - name: Lint
+        run: go tool task lint
+      - name: Test
+        run: go test -race -cover .
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 .

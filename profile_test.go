@@ -80,8 +80,9 @@ func TestCommandLineOverridesProfile(t *testing.T) {
 }
 
 func TestLoadProfileRejectsUnknownKeys(t *testing.T) {
-	_, err := loadProfile(writeProfile(t, `{"netwrok": "ollama"}`))
-	if err == nil || !strings.Contains(err.Error(), "netwrok") {
+	const typo = "netwrok" //nolint:misspell // the misspelled key is the test input
+	_, err := loadProfile(writeProfile(t, `{"`+typo+`": "ollama"}`))
+	if err == nil || !strings.Contains(err.Error(), typo) {
 		t.Fatalf("err = %v, want it to name the unknown key", err)
 	}
 }

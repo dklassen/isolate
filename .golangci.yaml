@@ -2,3 +2,89 @@ version: "2"
 
 linters:
   default: standard
+  enable:
+    # complexity
+    - cyclop
+    - funlen
+    - gocognit
+    - gocyclo
+    - maintidx
+    - nestif
+    # security
+    - gosec
+    - noctx
+    # errors
+    - err113
+    - errname
+    - errorlint
+    - nilerr
+    - nilnil
+    - wrapcheck
+    # bugs and idioms
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - exhaustive
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - gocritic
+    - goconst
+    - godot
+    - intrange
+    - makezero
+    - misspell
+    - modernize
+    - nakedret
+    - nolintlint
+    - perfsprint
+    - predeclared
+    - reassign
+    - revive
+    - thelper
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+    - whitespace
+  settings:
+    cyclop:
+      max-complexity: 15
+    funlen:
+      lines: 80
+      statements: 50
+    gocognit:
+      min-complexity: 20
+    gocyclo:
+      min-complexity: 15
+    nestif:
+      min-complexity: 4
+    gocritic:
+      enabled-tags: [diagnostic, performance, style]
+      disabled-checks:
+        # Passing container by value keeps runtimes from mutating the caller's spec.
+        - hugeParam
+    gosec:
+      excludes:
+        # Launching the container CLI and reading user-named files is the tool's purpose.
+        - G204
+        - G304
+        - G703
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Table-driven tests are long and repeat literals by design.
+      - path: _test\.go
+        linters: [funlen, goconst, maintidx]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

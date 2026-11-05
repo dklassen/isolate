@@ -153,8 +153,11 @@ The agent can use a model server on the host, such as Ollama at
 ```bash
 go tool task test   # go test
 go tool task lint   # golangci-lint
-go tool task fmt    # gofmt
+go tool task fmt    # gofumpt + goimports
 ```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every push: `go mod tidy -diff`, a
+`go generate` drift check, lint, `go test -race`, and govulncheck.
 
 To add an agent, register it in [agent.go](agent.go) and add `assets/agents/<agent>/`
 (`package.json`, lockfile, `install.sh`, `start.sh`), wired into
