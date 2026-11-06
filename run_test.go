@@ -2,7 +2,7 @@ package main
 
 import (
 	"errors"
-	"flag"
+	"io"
 	iofs "io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 type buildMountsCase struct {
@@ -296,168 +299,124 @@ func TestNewRunLogDir(t *testing.T) {
 	}
 }
 
-// testFlagSet builds the production run flag set for tests that only need
-// flag recognition (splitFlags derives it from the registered set).
-func testFlagSet() *flag.FlagSet { return newRunFlags().fs }
-
-func TestSplitFlagsRepeatedSecretsFile(t *testing.T) {
-	rf := newRunFlags()
-	flagArgs, positional, agentArgs, err := splitFlags(rf.fs, []string{
-		".", "--secrets-file", "a.env", "--agent", "claude", "--secrets-file", "b.env",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	wantPositional := []string{"."}
-	if len(positional) != len(wantPositional) || positional[0] != wantPositional[0] {
-		t.Fatalf("positional = %v, want %v", positional, wantPositional)
-	}
-	if len(agentArgs) != 0 {
-		t.Fatalf("agentArgs = %v, want empty", agentArgs)
-	}
-
-	if err := rf.fs.Parse(flagArgs); err != nil {
-		t.Fatalf("unexpected parse error: %v", err)
-	}
-
-	if *rf.agent != "claude" {
-		t.Fatalf("agent = %q, want claude", *rf.agent)
-	}
-	want := []string{"a.env", "b.env"}
-	if len(*rf.secretsFiles) != len(want) || (*rf.secretsFiles)[0] != want[0] || (*rf.secretsFiles)[1] != want[1] {
-		t.Fatalf("secretsFiles = %v, want %v", *rf.secretsFiles, want)
-	}
+// testRunFlags builds the run flags on a standalone flag set.
+func testRunFlags() *runFlags {
+	return newRunFlags(pflag.NewFlagSet("run", pflag.ContinueOnError))
 }
 
-// All of these are "must fail loudly, never silently demote" regressions:
-// an unrecognized or value-less flag used to land in positional and either
-// launch the agent with nothing mounted (--pi-config was renamed to --config)
-// or get MkdirAll'd into a literal ./--config directory that was then mounted
-// as /workspace. The "--" separator case: "--" is an agent-args boundary,
-// not a value --config may swallow.
-func TestSplitFlagsRejectsInvalidInput(t *testing.T) {
-	fs := testFlagSet()
+// executeRun executes `isolate run args`, stopping where it would start the
+// container, and returns the folder args, agent args, and parsed flags.
+func executeRun(args []string) (positional, agentArgs []string, fs *pflag.FlagSet, err error) {
+	cmd := newRunCmd()
+	cmd.SetArgs(args)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.Run = func(cmd *cobra.Command, args []string) {
+		positional, agentArgs = splitAgentArgs(cmd, args)
+	}
+	err = cmd.Execute()
+	return positional, agentArgs, cmd.Flags(), err
+}
 
+func TestRunCmdParsesArgs(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    []string
-		wantSub string // error substring (presence implies an error is expected)
+		name           string
+		args           []string
+		wantPositional []string
+		wantAgentArgs  []string
 	}{{
-		name:    "unknown long flag",
-		args:    []string{".", "--pi-config", "assets/pi"},
-		wantSub: `"--pi-config"`,
+		name:           "flags after the folder",
+		args:           []string{".", "--agent", "claude", "--memory=2g"},
+		wantPositional: []string{"."},
 	}, {
-		name:    "unknown long flag (= form)",
-		args:    []string{".", "--pi-config=assets/pi"},
-		wantSub: `"--pi-config"`,
+		name:           "flags before the folder",
+		args:           []string{"--agent", "claude", "--memory", "2g", "."},
+		wantPositional: []string{"."},
 	}, {
-		name:    "unknown flag before the folder",
-		args:    []string{"--resume", "."},
-		wantSub: `"--resume"`,
+		name:           "args after '--' go to the agent",
+		args:           []string{".", "--agent", "claude", "--memory=2g", "--", "--resume", "--dangerously-skip-permissions"},
+		wantPositional: []string{"."},
+		wantAgentArgs:  []string{"--resume", "--dangerously-skip-permissions"},
 	}, {
-		name:    "unknown short flag",
-		args:    []string{".", "-x"},
-		wantSub: `"-x"`,
+		name:           "bare '--' with nothing after",
+		args:           []string{".", "--agent", "claude", "--memory=2g", "--"},
+		wantPositional: []string{"."},
 	}, {
-		name:    "value flag at end, no value",
-		args:    []string{"run", "--config"},
-		wantSub: `"--config" needs a value`,
+		name:           "positional named like a flag",
+		args:           []string{flagModel, "--agent", "claude", "--memory=2g"},
+		wantPositional: []string{flagModel},
 	}, {
-		name:    "value flag after the folder, no value",
-		args:    []string{".", "--config"},
-		wantSub: `"--config" needs a value`,
-	}, {
-		name:    "value flag followed by the '--' separator",
-		args:    []string{".", "--config", "--", "--resume"},
-		wantSub: `"--config" needs a value`,
+		name:           "lone '-' is a positional",
+		args:           []string{"-", "--agent", "claude", "--memory=2g"},
+		wantPositional: []string{"-"},
 	}}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, err := splitFlags(fs, tt.args)
-			if err == nil {
-				t.Fatalf("splitFlags(%v): expected error, got nil", tt.args)
+			positional, agentArgs, fs, err := executeRun(tt.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
-			if !strings.Contains(err.Error(), tt.wantSub) {
-				t.Fatalf("err = %v, want containing %q", err, tt.wantSub)
+			if !slices.Equal(positional, tt.wantPositional) {
+				t.Fatalf("positional = %v, want %v", positional, tt.wantPositional)
+			}
+			if !slices.Equal(agentArgs, tt.wantAgentArgs) {
+				t.Fatalf("agentArgs = %v, want %v", agentArgs, tt.wantAgentArgs)
+			}
+			agent, _ := fs.GetString(flagAgent)
+			memory, _ := fs.GetString(flagMemory)
+			if agent != "claude" || memory != "2g" {
+				t.Fatalf("agent, memory = %q, %q, want claude, 2g", agent, memory)
 			}
 		})
 	}
 }
 
-func TestSplitFlagsForwardsAgentArgs(t *testing.T) {
-	flagArgs, positional, agentArgs, err := splitFlags(testFlagSet(), []string{
-		".", "--agent", "claude", "--", "--resume", "--dangerously-skip-permissions",
-	})
+func TestRunCmdRepeatedSecretsFile(t *testing.T) {
+	_, _, fs, err := executeRun([]string{".", "--secrets-file", "a.env", "--agent", "claude", "--secrets-file", "b.env"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(positional) != 1 || positional[0] != "." {
-		t.Fatalf("positional = %v, want [.]", positional)
-	}
-	wantFlags := []string{"--agent", "claude"}
-	if len(flagArgs) != len(wantFlags) || flagArgs[0] != wantFlags[0] || flagArgs[1] != wantFlags[1] {
-		t.Fatalf("flagArgs = %v, want %v", flagArgs, wantFlags)
-	}
-	wantAgent := []string{"--resume", "--dangerously-skip-permissions"}
-	if len(agentArgs) != len(wantAgent) {
-		t.Fatalf("agentArgs = %v, want %v", agentArgs, wantAgent)
-	}
-	for i := range wantAgent {
-		if agentArgs[i] != wantAgent[i] {
-			t.Fatalf("agentArgs[%d] = %q, want %q", i, agentArgs[i], wantAgent[i])
-		}
+	got, _ := fs.GetStringArray(flagSecretsFile)
+	if want := []string{"a.env", "b.env"}; !slices.Equal(got, want) {
+		t.Fatalf("secretsFiles = %v, want %v", got, want)
 	}
 }
 
-func TestSplitFlagsBareDoubleDashWithNothingAfter(t *testing.T) {
-	_, positional, agentArgs, err := splitFlags(testFlagSet(), []string{".", "--"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(positional) != 1 || positional[0] != "." {
-		t.Fatalf("positional = %v, want [.]", positional)
-	}
-	if len(agentArgs) != 0 {
-		t.Fatalf("agentArgs = %v, want empty", agentArgs)
-	}
-}
-
-// Guards the single-source-of-truth design: a flag only needs registering on
-// the flag set to be accepted by splitFlags (no parallel knownFlags list).
-func TestSplitFlagsRecognizesRegisteredFlags(t *testing.T) {
-	fs := testFlagSet()
-
-	t.Run("memory registered with a value (--name=value form)", func(t *testing.T) {
-		flagArgs, positional, _, err := splitFlags(fs, []string{".", "--memory=2g"})
+func TestRunCmdHelpDoesNotRun(t *testing.T) {
+	for _, args := range [][]string{{"-h"}, {".", "--help"}} {
+		positional, _, _, err := executeRun(args)
 		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatalf("%v: unexpected error: %v", args, err)
 		}
-		if len(positional) != 1 || positional[0] != "." {
-			t.Fatalf("positional = %v, want [.]", positional)
+		if positional != nil {
+			t.Fatalf("%v: ran with positional %v, want help only", args, positional)
 		}
-		if len(flagArgs) != 2 || flagArgs[0] != "--memory" || flagArgs[1] != "2g" {
-			t.Fatalf("flagArgs = %v, want [--memory 2g]", flagArgs)
-		}
-		rf := newRunFlags()
-		if err := rf.fs.Parse([]string{"--memory=2g"}); err != nil {
-			t.Fatalf("unexpected parse error: %v", err)
-		}
-		if *rf.memory != "2g" {
-			t.Fatalf("memory = %q, want 2g", *rf.memory)
-		}
-	})
+	}
+}
 
-	t.Run("memory registered with a separate value", func(t *testing.T) {
-		if _, _, _, err := splitFlags(fs, []string{".", "--memory", "8g"}); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("unregistered flag stays an error even after adding a registered one", func(t *testing.T) {
-		if _, _, _, err := splitFlags(fs, []string{".", "--memory", "2g", "--pi-config", "assets/pi"}); err == nil {
-			t.Fatal("expected error, got nil")
-		}
-	})
+// An unrecognized or value-less flag, or a folder count other than one, must
+// fail loudly: run anyway, it would mount the wrong folder or none.
+func TestRunCmdRejectsInvalidArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"no folder", nil},
+		{"only agent args", []string{"--", "--resume"}},
+		{"two folders", []string{".", "other"}},
+		{"unknown long flag", []string{".", "--pi-config", "assets/pi"}},
+		{"unknown long flag (= form)", []string{".", "--pi-config=assets/pi"}},
+		{"unknown flag before the folder", []string{"--resume", "."}},
+		{"unknown short flag", []string{".", "-x"}},
+		{"single-dash long flag", []string{".", "-agent", "claude"}},
+		{"value flag with no value", []string{".", "--config"}},
+		{"bool flag given a value", []string{".", "--help=maybe"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, _, err := executeRun(tt.args); err == nil {
+				t.Fatalf("run %v: expected error, got nil", tt.args)
+			}
+		})
+	}
 }
