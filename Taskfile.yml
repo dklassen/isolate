@@ -197,6 +197,7 @@ tasks:
   system:check:
     desc: Check apple container system status; start it if it's down
     silent: true
+    run: once
     cmds:
       - |
         if ! container system status; then
